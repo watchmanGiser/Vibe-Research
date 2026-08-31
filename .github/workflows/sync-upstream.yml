@@ -73,6 +73,15 @@ jobs:
               --body "检测到上游 simonlin1212/Vibe-Research 更新。请先查看 Files changed 和 CI；确认后再合并，生产部署仍需单独审批。"
           fi
 
+      - name: Request owner review
+        if: ${{ steps.changes.outputs.needed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_number="$(gh pr list --base main --head upstream-candidate --state open --json number --jq '.[0].number // empty')"
+          [[ -n "$pr_number" ]] || { echo "未找到上游候选 PR" >&2; exit 1; }
+          gh pr edit "$pr_number" --add-reviewer watchmanGiser
+
       - name: Summary
         run: |
           {
