@@ -1,0 +1,19 @@
+[Unit]
+Description=检查 Vibe Research 上游代码更新
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/bin/node /opt/vibe-research/shared/bin/check-updates.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/vibe-research/shared
+ReadWritePaths=/opt/vibe-research/app/desktop/dist
+UMask=0022
+StandardOutput=journal
+StandardError=journal
