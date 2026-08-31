@@ -1,0 +1,12 @@
+[Unit]
+Description=每天两次检查 Vibe Research 上游代码更新
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+OnCalendar=*-*-* 12:00:00
+AccuracySec=1s
+Persistent=true
+Unit=vibe-research-update-check.service
+
+[Install]
+WantedBy=timers.target
