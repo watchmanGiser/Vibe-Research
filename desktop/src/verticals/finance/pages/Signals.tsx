@@ -151,9 +151,9 @@ function GpuRentPanel() {
   const [activeMonth, setActiveMonth] = useState(0);
 
   // 打开先给存档、后台再刷（见 core/data/useArchiveThenRefresh）：
-  // 这一页要拉一年曲线 + 三张卡的挂单数 + 十几个远期合约，干等好几十秒没有必要。
+  // 后端按 24 小时快照策略决定是否真取；真取时历史曲线只拉最后一天之后的增量。
   const { data, err, loading, refreshing, staleNote, refresh } =
-    useArchiveThenRefresh<GpuRentData>((r) => (r ? api.gpuRentRefresh() : api.gpuRent()), []);
+    useArchiveThenRefresh<GpuRentData>(() => api.gpuRent(), []);
 
   const hasData = !!data?.generated_at;
   const fw = data?.forward;

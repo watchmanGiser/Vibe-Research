@@ -24,7 +24,7 @@ import { REGISTRY_REL, buildStagePlan, fetchArgv, loadRegistry, type EndpointDef
 import { productVersion } from "./version.ts";
 import { DEFAULT_CONSISTENCY, readSnapshot, snapshotKey, snapshotUsable, writeSnapshot, type Consistency } from "./snapshot.ts";
 import { currentPlugin } from "./plugin.ts";
-import { ReportLibraryError, addReport, listReports as listStoredReports, removeReport, reportCitations, reportContext, reportFile, type ReportRecord } from "./report_library.ts";
+import { ReportLibraryError, addReport, automaticReportContext, listReports as listStoredReports, removeReport, reportCitations, reportFile, type ReportRecord } from "./report_library.ts";
 import { GuidedToolError, guidedToolTurn as guidedToolTurnCore, type GuidedToolReply } from "./guided_tool.ts";
 import { LocalAgentError, probeClaude, probeCodex, startCodexLogin, type LocalAgentStatus } from "./local_agent_runtime.ts";
 import { sdkCodexVersion } from "./runner.ts";
@@ -199,6 +199,30 @@ export interface FetchResult {
 }
 
 /**
+ * GPU 租金的每日任务把最后一次成功/部分成功的信封持久化在固定位置；它和三张卡的
+ * 增量历史文件属于同一份可恢复存档。通用快照不存在时，页面首屏从这里读，避免为了
+ * 展示历史曲线重新等待上游。手动刷新仍会走正常取数路径并覆盖这份存档。
+ */
+function savedGpuRentFetch(ctx: ServiceContext): FetchResult | null {
+  const file = safePath(ctx, "mcp", "default", "fetch", "gpu_rent_thermometer.json");
+  if (!fs.existsSync(file) || !fs.lstatSync(file).isFile()) return null;
+  const envelope = readJsonIfExists<Record<string, unknown>>(file);
+  if (!envelope || !Array.isArray(envelope.evidence) || envelope.evidence.length === 0) return null;
+  const fetchedAt = typeof envelope.fetched_at === "string" && Number.isFinite(Date.parse(envelope.fetched_at))
+    ? envelope.fetched_at
+    : fs.statSync(file).mtime.toISOString();
+  return {
+    envelope,
+    exit_code: 0,
+    out_dir: "mcp/default",
+    duration_ms: 0,
+    stderr_tail: "",
+    cached: true,
+    fetched_at: fetchedAt,
+  };
+}
+
+/**
  * 取数。**默认读上次的快照,不重新取** —— 页面打开一次就把依赖的端点全跑一遍,
  * 既慢又费钱,而多数时候用户只是想再看一眼上次看到的东西。要新数据传 `refresh: true`。
  *
@@ -245,6 +269,12 @@ export async function fetchEndpoint(
   if (snapshotUsable(hit, consistency, epMaxAge)) {
     return { ...(hit as NonNullable<typeof hit>).payload, cached: true, fetched_at: (hit as NonNullable<typeof hit>).fetched_at };
   }
+  // GPU 每日增量任务的落盘信封是跨重启存活的首屏存档；只在普通打开时兜底，
+  // `refresh: true` 必须真取，才能把缺失日期合并进三张卡的历史序列。
+  if (ep.id === "gpu_rent_thermometer" && !req.refresh && consistency.mode !== "fresh") {
+    const saved = savedGpuRentFetch(ctx);
+    if (saved) return saved;
+  }
   if (consistency.mode === "cache_only") {
     throw new ServiceError("no_snapshot", `端点 ${ep.id} 没有可用快照,而本次要求只读缓存(不联网)`);
   }
@@ -264,6 +294,9 @@ export async function fetchEndpoint(
     const extra: Record<string, string> = {};
     if (ep.auth_env && process.env[ep.auth_env]) extra[ep.auth_env] = process.env[ep.auth_env] as string;
     if (process.env.VRA_ALLOW_INSECURE_TLS) extra.VRA_ALLOW_INSECURE_TLS = process.env.VRA_ALLOW_INSECURE_TLS;
+    if (ep.id === "gpu_rent_thermometer") {
+      extra.VRA_GPU_HISTORY_DIR = path.join(ctx.dataRoot, "knowledge", "thermometers", "gpu_rent_history");
+    }
     const timeout = Math.min(Math.max(Number(req.timeout_ms) || 180_000, 1_000), 600_000);
     const t0 = Date.now();
     // 🔴 **必须是异步 spawn,不能用 spawnSync** —— spawnSync 会阻塞整个 Node 事件循环,
@@ -1029,14 +1062,17 @@ export interface ChatServiceResult extends ChatTurnResult {
   report_sources: { id: string; name: string; page: number | null }[];
 }
 
-export async function chatSend(
+async function sendChat(
   ctx: ServiceContext,
   req: { session?: string; message: string; llm?: LlmOverride },
   signal?: AbortSignal,
+  includeReportContext = true,
 ): Promise<ChatServiceResult> {
   const llm = checkLlmShape(req.llm);
   try {
-    const reports = reportContext(ctx.dataRoot, String(req.message ?? ""), { limit: 5 });
+    const reports = includeReportContext
+      ? automaticReportContext(ctx.dataRoot, String(req.message ?? ""), { limit: 5 })
+      : null;
     const turn = await chatSendCore(
       {
         repoRoot: ctx.repoRoot,
@@ -1062,6 +1098,27 @@ export async function chatSend(
     if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message);
     throw e;
   }
+}
+
+/** 正常对话会按问题召回资料，并要求回答保留可核验引用。 */
+export async function chatSend(
+  ctx: ServiceContext,
+  req: { session?: string; message: string; llm?: LlmOverride },
+  signal?: AbortSignal,
+): Promise<ChatServiceResult> {
+  return await sendChat(ctx, req, signal, true);
+}
+
+/**
+ * 设置页的连接探针只核验模型是否可调用，不能触发资料检索或资料引用校验。
+ * 该行为只由受鉴权的专用 HTTP 路由调用，普通聊天请求无法关闭引用纪律。
+ */
+export async function connectionProbe(
+  ctx: ServiceContext,
+  req: { session?: string; message: string; llm?: LlmOverride },
+  signal?: AbortSignal,
+): Promise<ChatServiceResult> {
+  return await sendChat(ctx, req, signal, false);
 }
 
 // ---------------- 用户资料库 ----------------

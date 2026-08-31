@@ -458,6 +458,49 @@ export function reportContext(dataRoot: string, query: string, opts: { limit?: n
   return kept.length ? { text, hits: kept, truncated } : null;
 }
 
+/**
+ * 普通聊天只能在用户明确指向资料库，或问题命中已上传文件的标题 / 证券代码时才自动带入资料。
+ *
+ * 全文检索适合“请解读我上传的研报”这类明确请求；若把它用于每一句普通对话，像“今日复盘”
+ * 这样的长页面提示会因为“今日”“数据”等泛词偶遇报告正文，既污染回答，也会错误触发引用要求。
+ */
+function hasExplicitReportIntent(query: string): boolean {
+  return /(?:资料库|用户资料|上传(?:的)?(?:资料|报告|文件)?|研报|报告|文档|附件|原文|这(?:份|个)(?:资料|报告|文件|文档)|该(?:份|个)(?:资料|报告|文件|文档))/u.test(query);
+}
+
+function reportTitleMatchesQuery(name: string, query: string): boolean {
+  const title = normalized(name.replace(/\.[^.]+$/, ""));
+  const q = normalized(query);
+  if (!title || !q) return false;
+
+  // 中文文件名通常没有分词边界。三字连续片段足以识别公司 / 主题，同时避开“今日”“数据”
+  // 这类二字泛词；英文和数字则只接受至少三位的完整 token。
+  for (const run of title.match(/[\u3400-\u9fff]{3,}/g) ?? []) {
+    for (let start = 0; start <= run.length - 3; start += 1) {
+      if (q.includes(run.slice(start, start + 3))) return true;
+    }
+  }
+  for (const token of title.match(/[a-z0-9][a-z0-9._-]{2,31}/g) ?? []) {
+    if (q.includes(token)) return true;
+  }
+  return false;
+}
+
+/** 普通 /chat 的保守自动召回；个股研究仍通过 reportsForSymbol 走确定性的强制资料路径。 */
+export function automaticReportContext(dataRoot: string, query: string, opts: { limit?: number; maxChars?: number } = {}): ReportContext | null {
+  const text = String(query ?? "");
+  const records = listReports(dataRoot);
+  if (!records.length) return null;
+  if (hasExplicitReportIntent(text)) return reportContext(dataRoot, text, opts);
+
+  const q = normalized(text);
+  const matched = records.filter((rec) =>
+    rec.symbols.some((symbol) => q.includes(normalized(symbol))) || reportTitleMatchesQuery(rec.name, text),
+  );
+  if (!matched.length) return null;
+  return reportContext(dataRoot, text, { ...opts, reportIds: matched.map((rec) => rec.id) });
+}
+
 /** 从最终可见文本中提取结构化资料引用。只认完整 id，避免把普通文字误当引用。 */
 export function reportCitations(text: string): { id: string; page: number | null }[] {
   const out: { id: string; page: number | null }[] = [];
