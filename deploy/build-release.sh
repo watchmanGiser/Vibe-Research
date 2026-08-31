@@ -25,8 +25,14 @@ rsync -a \
   "$repo_root/" "$stage/app/"
 
 npm ci --omit=dev --prefix "$stage/app/orchestrator"
+# npm 会为依赖的命令行入口自动创建 .bin 符号链接；生产服务只通过 Node import 依赖，
+# 不使用这些开发期入口。远端为防止解包路径逃逸拒绝所有链接，因此归档前必须移除。
+rm -rf -- "$stage/app/orchestrator/node_modules/.bin"
 install -m 0644 "$repo_root/deploy/refresh-gpu.mjs" "$stage/app/scripts/refresh-gpu.mjs"
 printf '{"commit":"%s","built_at":"%s"}\n' "$commit_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/app/release.json"
+
+unexpected_link="$(find "$stage/app" -type l -print -quit)"
+[[ -z "$unexpected_link" ]] || { echo "发布 staging 仍包含符号链接：$unexpected_link" >&2; exit 2; }
 
 mkdir -p "$(dirname "$output")"
 tar -C "$stage/app" -czf "$output" .
