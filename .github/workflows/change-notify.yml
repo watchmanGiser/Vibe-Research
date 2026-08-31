@@ -1,0 +1,34 @@
+name: Main branch change notification
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write GitHub summary
+        run: |
+          {
+            echo "## main 收到新提交"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Author: ${GITHUB_ACTOR}"
+            echo "- Changes: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+            echo "- CI: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Feishu when configured
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: |
+          [[ -n "$FEISHU_WEBHOOK_URL" ]] || exit 0
+          payload="$(jq -n \
+            --arg text "Vibe Research main 已更新\n${GITHUB_SHA}\n${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
+            '{msg_type:"text",content:{text:$text}}')"
+          curl --fail --silent --show-error --max-time 15 \
+            -H 'Content-Type: application/json' \
+            -d "$payload" "$FEISHU_WEBHOOK_URL"
