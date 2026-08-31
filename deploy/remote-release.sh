@@ -32,6 +32,15 @@ while IFS= read -r entry; do
   }
 done < <(tar -tzf "$archive")
 
+# 归档只能包含普通文件和目录。拒绝符号链接、硬链接与设备节点，避免解包时借链接越出 staging。
+while IFS= read -r mode _; do
+  kind="${mode:0:1}"
+  [[ "$kind" == "-" || "$kind" == "d" ]] || {
+    echo "发布包包含不允许的归档条目类型：$mode" >&2
+    exit 2
+  }
+done < <(tar -tvzf "$archive")
+
 release_dir="$releases_dir/$commit_sha"
 staging_dir="$releases_dir/.staging-$commit_sha"
 [[ ! -e "$release_dir" && ! -e "$staging_dir" ]] || { echo "该 commit 已经部署或正在准备" >&2; exit 2; }
@@ -66,7 +75,7 @@ rollback() {
     ln -s "$previous" "$current_link.rollback"
     mv -Tf "$current_link.rollback" "$current_link"
     systemctl restart "$service_name" || true
-    "$previous/deploy/healthcheck.sh" "https://soufly.cn/vibe-research" || true
+    /usr/local/sbin/vibe-healthcheck "https://soufly.cn/vibe-research" || true
     if [[ "$(readlink -f "$current_link")" != "$release_dir" && -d "$release_dir" ]]; then
       rm -rf -- "$release_dir"
     fi
@@ -80,7 +89,7 @@ ln -s "$release_dir" "$current_link.next"
 mv -Tf "$current_link.next" "$current_link"
 switched=1
 systemctl restart "$service_name"
-"$release_dir/deploy/healthcheck.sh" "https://soufly.cn/vibe-research" "$commit_sha"
+/usr/local/sbin/vibe-healthcheck "https://soufly.cn/vibe-research" "$commit_sha"
 switched=0
 trap - ERR
 trap - EXIT

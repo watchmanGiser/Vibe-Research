@@ -1,5 +1,7 @@
 # 广州生产发布
 
+本仓库是 `watchmanGiser` 用于跟踪 `simonlin1212/Vibe-Research` 的 fork。`sync-upstream.yml` 每 5 分钟检查上游；发现变化时只更新 `upstream-candidate` 并创建 PR，不直接修改 `main` 或生产服务器。
+
 生产发布使用不可变版本目录和原子软链接：
 
 ```text
@@ -27,7 +29,8 @@
 
 ## 发布规则
 
-- `main` 的 push 先运行现有跨平台 CI。
+- 上游变化先进入候选 PR并运行现有跨平台 CI，人工审核合并后才进入 `main`。
+- `main` 的 push 再运行现有跨平台 CI。
 - CI 成功后，发布工作流再次执行 Linux 测试并生成绑定 commit SHA 的发布包。
 - `production` 审批通过后才上传服务器。
 - 服务重启后同时检查公网 API、首页和主进程真实工作目录。

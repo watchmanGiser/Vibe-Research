@@ -1,0 +1,82 @@
+name: Sync upstream candidate
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-candidate
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.repository == 'watchmanGiser/Vibe-Research' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch trusted upstream reference
+        run: |
+          git remote add upstream https://github.com/simonlin1212/Vibe-Research.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin upstream-candidate:refs/remotes/origin/upstream-candidate || true
+
+      - id: changes
+        name: Detect new upstream commit
+        run: |
+          upstream_sha="$(git rev-parse upstream/main)"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          elif git show-ref --verify --quiet refs/remotes/origin/upstream-candidate && \
+               git merge-base --is-ancestor upstream/main origin/upstream-candidate; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build candidate branch without touching main
+        if: ${{ steps.changes.outputs.needed == 'true' }}
+        env:
+          UPSTREAM_SHA: ${{ steps.changes.outputs.upstream_sha }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B upstream-candidate origin/main
+          if ! git merge --no-edit "$UPSTREAM_SHA"; then
+            git merge --abort
+            echo "上游更新与 fork 自动化发生冲突，需要人工处理。" >&2
+            exit 1
+          fi
+          git push --force-with-lease origin upstream-candidate
+
+      - name: Open candidate pull request
+        if: ${{ steps.changes.outputs.needed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SHA: ${{ steps.changes.outputs.upstream_sha }}
+        run: |
+          existing="$(gh pr list --base main --head upstream-candidate --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$existing" ]]; then
+            gh pr create \
+              --base main \
+              --head upstream-candidate \
+              --title "chore: sync upstream ${UPSTREAM_SHA:0:12}" \
+              --body "检测到上游 simonlin1212/Vibe-Research 更新。请先查看 Files changed 和 CI；确认后再合并，生产部署仍需单独审批。"
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "## 上游检查结果"
+            echo "- Upstream: \`${{ steps.changes.outputs.upstream_sha }}\`"
+            echo "- Candidate update needed: \`${{ steps.changes.outputs.needed }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
