@@ -15,8 +15,9 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, connectionProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
+import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -34,7 +35,7 @@ function send(res: http.ServerResponse, code: number, body: unknown, type = "app
 function sendFile(res: http.ServerResponse, file: string, name: string, type: string): void {
   // 校验和打开必须落在同一个文件描述符上；若在 lstat 与读取之间把文件换成符号链接，
   // 仅靠路径检查仍可能把资料库之外的文件下载出去。
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW_FLAG);
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error("download target is not a regular file");
@@ -109,10 +110,31 @@ function readBody(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<str
   });
 }
 
-/** 浏览器跨站防护:带 Origin 的请求只接受本机来源;POST 必须是 application/json(浏览器表单 / text/plain 的无预检请求一律拒绝) */
+/**
+ * 浏览器跨站防护：接受回环来源，或 Origin 与当前 Host / 反向代理 Host 完全一致的同源请求。
+ * 后者用于局域网、Tailscale 与 HTTPS 反向代理；浏览器不能伪造 Host，真正的跨站来源仍会被拒绝。
+ * POST 必须是 application/json（浏览器表单 / text/plain 的无预检请求一律拒绝）。
+ */
+function originMatchesRequestHost(req: http.IncomingMessage, rawOrigin: string): boolean {
+  let origin: URL;
+  try { origin = new URL(rawOrigin); } catch { return false; }
+  if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.origin !== rawOrigin) return false;
+
+  const hosts = [req.headers.host, req.headers["x-forwarded-host"]]
+    .flatMap((value) => Array.isArray(value) ? value : value ? [value] : [])
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return hosts.includes(origin.host.toLowerCase());
+}
+
 function crossSiteReject(req: http.IncomingMessage): { code: number; error: string } | null {
   const origin = req.headers.origin;
-  if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(String(origin))) return { code: 403, error: "forbidden_origin" };
+  if (origin !== undefined) {
+    const raw = String(origin);
+    const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(raw);
+    if (!loopback && !originMatchesRequestHost(req, raw)) return { code: 403, error: "forbidden_origin" };
+  }
   const sfs = req.headers["sec-fetch-site"];
   if (sfs && sfs !== "same-origin" && sfs !== "none") return { code: 403, error: "forbidden_cross_site" };
   if (req.method === "POST" && !String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return { code: 415, error: "content_type_must_be_json" };
@@ -238,6 +260,13 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
           return send(res, 200, await chatSend(ctx, b as never, signal));
         });
       }
+      // 设置页连接检测：只验证模型可调用性，不召回用户资料，也不放松普通 /chat 的引用校验。
+      if (req.method === "POST" && url.pathname === "/connection-probe") {
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req);
+          return send(res, 200, await connectionProbe(ctx, b as never, signal));
+        });
+      }
       // 外部 RSS 标题翻译：与自由对话分开，后端固定 developer 指令、schema 与一次性线程。
       if (req.method === "POST" && url.pathname === "/translate-headlines") {
         return await withRequestAbort(req, res, async (signal) => {
@@ -335,14 +364,16 @@ export function resolveToken(ctx: ServiceContext, env: NodeJS.ProcessEnv = proce
   if (env.VRA_API_TOKEN && env.VRA_API_TOKEN.length >= 16) return { token: env.VRA_API_TOKEN, source: "env", file };
   if (fs.existsSync(file)) {
     if (!fs.lstatSync(file).isFile()) throw new ServiceError("path_symlink", "api.token 不是普通文件");
+    restrictPrivateFile(file);
     const t = fs.readFileSync(file, "utf8").trim();
     if (t.length >= 16) return { token: t, source: "file", file };
   }
   const token = crypto.randomBytes(24).toString("hex");
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | NOFOLLOW_FLAG, 0o600);
   fs.writeSync(fd, token + "\n");
   fs.closeSync(fd);
+  restrictPrivateFile(file);
   return { token, source: "generated", file };
 }
 

@@ -13,6 +13,8 @@
  */
 import { readUserLlm } from "./llmStore.ts";
 
+const API_BASE = `${import.meta.env.BASE_URL}api`;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -131,7 +133,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const agentPath = isAgentPath(path);
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
         Accept: "application/json",

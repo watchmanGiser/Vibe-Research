@@ -182,6 +182,12 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal((await call("POST", "/fetch", { endpoint: "em_reports", symbol: "300308" }, { "Sec-Fetch-Site": "cross-site" })).code, 403);
     assert.equal((await call("POST", "/fetch", "{}", { "Content-Type": "text/plain" })).code, 415);
     assert.equal((await call("GET", "/health", undefined, { Origin: "http://localhost:5173" })).code, 200);
+    assert.equal((await call("GET", "/health", undefined, {
+      Host: "100.91.5.71:5930", Origin: "http://100.91.5.71:5930", "Sec-Fetch-Site": "same-origin",
+    })).code, 200);
+    assert.equal((await call("GET", "/health", undefined, {
+      Host: "127.0.0.1:8765", "X-Forwarded-Host": "soufly.cn", Origin: "https://soufly.cn", "Sec-Fetch-Site": "same-origin",
+    })).code, 200);
     const agents = await call("GET", "/local-agents");
     assert.equal(agents.code, 200);
     assert.deepEqual((agents.json as { provider: string }[]).map((x) => x.provider), ["cli-codex", "cli-claude"]);
