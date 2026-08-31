@@ -30,6 +30,9 @@ function apiToken(): string {
 }
 
 export default defineConfig({
+  // 生产站点由 Nginx 挂载在 soufly.cn/vibe-research/，不能让构建产物回到域名根目录 /assets。
+  // 本地单独调试根路径时可显式传 VITE_BASE_PATH=/ 覆盖。
+  base: process.env.VITE_BASE_PATH ?? "/vibe-research/",
   plugins: [react()],
   // 🔴 `@` 指向**垂类包**而不是 src:上游 UI 里写的是 `@/components`、`@/lib`、`@/data`,
   //    我们把它整套放进 verticals/finance/,别名这么指,上游代码一行都不用改。

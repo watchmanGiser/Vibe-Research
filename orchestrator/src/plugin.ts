@@ -255,6 +255,8 @@ export interface Plugin {
   readonly topicSections: Readonly<Record<string, string>>;
   /** 变化提醒默认盯的证据字段 */
   readonly alertFields: readonly string[];
+  /** 普通对话中表示“请使用已上传资料”的垂类术语；Core 只处理通用资料措辞。 */
+  readonly reportIntentTerms?: readonly string[];
   /** doctor 的 calc 自检:跑哪个函数、什么入参、期望什么值 */
   /** doctor 的自检计算;垂类若没有确定性计算库,给 `null`(第二垂类验收装置打红) */
   readonly selfTestCalc: { readonly fn: string; readonly args: Readonly<Record<string, unknown>>; readonly expect: number } | null;
@@ -619,6 +621,7 @@ export const PLUGIN_SCHEMA = {
     topicMerge: mapOf({ type: "string" }),
     // ⚠️ 允许为空:垂类可以没有预警字段
     alertFields: strArray(),
+    reportIntentTerms: strArray({ uniqueItems: true }),
     // 可选:不声明台账的垂类完全合法(第二垂类验收装置里就没有)
     ledger: LEDGER,
     tools: TOOLS,
@@ -864,6 +867,7 @@ interface Decl {
   extraSectionsAfter: string;
   topicMerge: Record<string, string>;
   alertFields: string[];
+  reportIntentTerms?: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
   tools?: Record<string, { label: string; module: string; timeoutMs?: number }>;
@@ -1122,6 +1126,7 @@ function register(plugin: Plugin): void {
     extraSectionsAfter: plugin.extraSectionsAfter,
     topicMerge: tableOnce("topicMerge", plugin.topicMerge),
     alertFields: cp(plugin.alertFields),
+    ...(plugin.reportIntentTerms === undefined ? {} : { reportIntentTerms: cp(plugin.reportIntentTerms) }),
     // null(垂类没有确定性计算库)要原样传给 ajv —— 拆成 { fn: undefined } 会被判成"缺字段的对象"
     selfTestCalc: st == null ? null : { fn: st.fn, args: st.args, expect: st.expect },
     // 台账种类表:**只读一次**,而且只在真的声明了才放进 decl ——
@@ -1304,6 +1309,7 @@ function register(plugin: Plugin): void {
     extraSectionsAfter: d.extraSectionsAfter,
     topicMerge: Object.freeze({ ...d.topicMerge }),
     alertFields: Object.freeze([...d.alertFields]),
+    ...(d.reportIntentTerms === undefined ? {} : { reportIntentTerms: Object.freeze([...d.reportIntentTerms]) }),
     selfTestCalc: d.selfTestCalc ? Object.freeze({ fn: d.selfTestCalc.fn, args: args as Record<string, unknown>, expect: d.selfTestCalc.expect }) : null,
     // 摄入时已 deepFrozen;没声明就整个不带这个键(消费方一律走 `?.`)
     ...(d.ledger === undefined ? {} : { ledger: d.ledger }),

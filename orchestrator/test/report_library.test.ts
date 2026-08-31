@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ReportLibraryError, addReport, listReports, removeReport, reportCitationErrors, reportCitations, reportContext, reportFile, reportsForSymbol } from "../src/report_library.ts";
+import { ReportLibraryError, addReport, automaticReportContext, listReports, removeReport, reportCitationErrors, reportCitations, reportContext, reportFile, reportsForSymbol } from "../src/report_library.ts";
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "vra-reports-"));
 const b64 = (buf: Buffer, mime = "text/plain") => `data:${mime};base64,${buf.toString("base64")}`;
@@ -82,6 +82,17 @@ test("研报引用必须来自本轮真实命中，且页码不能由模型编�
   assert.ok(reportCitationErrors(`[资料:${"b".repeat(32)} p.3]`, sources).some((e) => e.includes("本轮未提供")));
   assert.deepEqual(reportCitationErrors(`该判断来自原文 [资料:${id} p.3]`, sources), []);
   assert.deepEqual(reportCitations(`前文 [资料:${id} p.3]`), [{ id, page: 3 }]);
+});
+
+test("普通对话只有明确资料意图或标题命中时才自动召回", async () => {
+  const root = tmp();
+  const rec = await addReport(root, {
+    name: "中际旭创跟踪.md",
+    content: b64(Buffer.from("中际旭创 300308 高速光模块需求增长", "utf8")),
+  });
+  assert.equal(automaticReportContext(root, "今日复盘", { intentTerms: ["研报"] }), null);
+  assert.ok(automaticReportContext(root, "解读我的研报", { intentTerms: ["研报"] })?.hits.some((hit) => hit.id === rec.id));
+  assert.ok(automaticReportContext(root, "中际旭创最近怎么样")?.hits.some((hit) => hit.id === rec.id));
 });
 
 test("同一文件重复上传不复制；删除同时移除原文件与正文，但不碰其他报告", async () => {

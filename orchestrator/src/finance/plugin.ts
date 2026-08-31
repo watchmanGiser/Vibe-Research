@@ -172,6 +172,9 @@ export const FINANCE_PLUGIN: Plugin = {
     "shareholder_count", "lockup_upcoming_count", "dragon_tiger_count", "block_trade_count",
     "research_report_count_1y", "pe_ttm_latest", "announcement_title"],
 
+  /** 用户用这个垂类术语指向已上传资料时，普通对话允许全文召回。 */
+  reportIntentTerms: ["研报"],
+
   /** 标准列的表头显示名 */
   standardColumnLabels: {
     pe_deducted_x4: "扣非×4 PE", forward_pe: "前瞻 PE", pe_ttm_percentile: "PE 分位", peg: "PEG",

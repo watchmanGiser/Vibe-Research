@@ -12,7 +12,7 @@
  *  ③ 鉴权与密钥都不在浏览器:Bearer 由 Vite 代理注入(见 vite.config.ts)。
  */
 import {
-  ApiError, backend, noteKV, notWired, num, round2, rows, scalar, str, throwNotWired,
+  ApiError, apiPath, backend, noteKV, notWired, num, round2, rows, scalar, str, throwNotWired,
   type Envelope,
 } from "./backend";
 import {
@@ -37,7 +37,7 @@ export const authHeaders = (): Record<string, string> => ({});
 
 export async function downloadReport(id: string, name: string): Promise<void> {
   let res: Response;
-  try { res = await fetch(`/api/reports/${encodeURIComponent(id)}/download`); }
+  try { res = await fetch(apiPath(`/reports/${encodeURIComponent(id)}/download`)); }
   catch (e) { throw new ApiError(`连接不到编排器 API:${e instanceof Error ? e.message : String(e)}`, 0, "network"); }
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
