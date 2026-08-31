@@ -13,7 +13,10 @@
  */
 import { readUserLlm } from "./llmStore.ts";
 
-const API_BASE = `${import.meta.env.BASE_URL}api`;
+const API_BASE = `${import.meta.env?.BASE_URL ?? "/"}api`;
+
+/** Vite 构建时使用站点子路径；Node 测试环境没有 import.meta.env，回退到根路径。 */
+export const apiPath = (path: string): string => `${API_BASE}${path}`;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -133,7 +136,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const agentPath = isAgentPath(path);
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(apiPath(path), {
       ...init,
       headers: {
         Accept: "application/json",

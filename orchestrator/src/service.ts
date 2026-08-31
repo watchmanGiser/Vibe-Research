@@ -1071,7 +1071,10 @@ async function sendChat(
   const llm = checkLlmShape(req.llm);
   try {
     const reports = includeReportContext
-      ? automaticReportContext(ctx.dataRoot, String(req.message ?? ""), { limit: 5 })
+      ? automaticReportContext(ctx.dataRoot, String(req.message ?? ""), {
+        limit: 5,
+        intentTerms: currentPlugin().reportIntentTerms,
+      })
       : null;
     const turn = await chatSendCore(
       {
