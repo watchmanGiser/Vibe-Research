@@ -48,6 +48,34 @@ test("开场后阶段按契约排好、全部 pending;gaps 原样带着", () => 
   assert.equal((getDebate("d1") as unknown as Record<string, unknown>).dossier, undefined);
 });
 
+test("推进阶段使用本次模型配置，且 API key 不进入辩论状态", async () => {
+  resetDebates();
+  const apiKey = "test-debate-key-must-not-persist";
+  const llm = {
+    provider: "openai-compatible",
+    baseURL: "https://example.invalid/v1",
+    apiKey,
+    model: "test-model",
+  };
+  startDebate({
+    id: "d-llm",
+    symbol: "300308",
+    envelopes: [ENV([{ id: "ev-llm", field: "price", value: 1, unit: "元", period: "2026-08-26" }])],
+    gaps: [],
+  });
+  let received: unknown;
+  await advanceDebate(
+    { repoRoot: process.cwd(), llm },
+    { id: "d-llm" },
+    async (_message, _session, currentLlm) => {
+      received = currentLlm;
+      return "多方论据";
+    },
+  );
+  assert.deepEqual(received, llm, "模型覆盖必须传给当前阶段的 Chat 调用");
+  assert.doesNotMatch(JSON.stringify(getDebate("d-llm")), new RegExp(apiKey), "API key 不得进入辩论 Session");
+});
+
 test("🔴 契约:sees 只能指向排在自己前面的阶段", () => {
   // 指向后面的阶段永远读不到内容,而产出照样是一篇像样的文章 —— 看不出这一环是瞎写的
   const stages = currentPlugin().debate!.stages;

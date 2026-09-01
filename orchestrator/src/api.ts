@@ -248,7 +248,13 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         }));
       }
       if (req.method === "POST" && parts[0] === "debate" && parts[1] && parts[2] === "advance") {
-        return send(res, 200, await debateAdvance(ctx, { id: parts[1] }));
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req) as Record<string, unknown> | null;
+          return send(res, 200, await debateAdvance(ctx, {
+            id: parts[1],
+            ...(b?.llm !== undefined ? { llm: b.llm } : {}),
+          }, signal));
+        });
       }
       if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, await fetchEndpoint(ctx, b as never)); }
       // 自由对话:一问一答。**只读沙箱 + 不联网 + 过合规 gate**(见 chat.ts),不产出证据、不写台账。

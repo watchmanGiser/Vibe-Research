@@ -3,6 +3,31 @@ import test from "node:test";
 
 import { ApiError, backend, friendlyAgentError } from "../src/verticals/finance/lib/backend.ts";
 
+test("辩论推进携带当前浏览器模型配置", async () => {
+  const oldFetch = globalThis.fetch;
+  const llm = {
+    provider: "openai-compatible",
+    baseURL: "https://example.invalid/v1",
+    apiKey: "test-only-key",
+    model: "test-model",
+  };
+  let request: { url: string; init?: RequestInit } | undefined;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    request = { url: String(input), init };
+    return new Response(JSON.stringify({ id: "d1", stages: [], done: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await backend.debateAdvance("d1", undefined, llm);
+    assert.equal(request?.url, "/api/debate/d1/advance");
+    assert.deepEqual(JSON.parse(String(request?.init?.body)), { llm });
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
 test("Agent 认证失败只显示可行动的中文提示，不暴露重连地址与鉴权原文", () => {
   const raw = new ApiError(
     "Reconnecting... 2/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: secret)",
