@@ -77,7 +77,7 @@ export async function debateStream(
 
     while (!st.done) {
       if (signal?.aborted) return undefined;
-      st = await backend.debateAdvance(st.id);
+      st = await backend.debateAdvance(st.id, signal);
       push(st);
     }
     // 🔴 全挂了要说全挂了 —— 只看 done 会把"五段全空"读成"辩论正常完成"

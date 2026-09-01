@@ -936,9 +936,20 @@ export async function debateStart(ctx: ServiceContext, req: { symbol: string; se
 }
 
 /** 跑下一个待跑的阶段(一次一个,界面据此逐段显示) */
-export async function debateAdvance(ctx: ServiceContext, req: { id: string }): Promise<DebateState> {
+export async function debateAdvance(
+  ctx: ServiceContext,
+  req: { id: string; llm?: unknown },
+  signal?: AbortSignal,
+): Promise<DebateState> {
+  const llm = checkLlmShape(req.llm);
   try {
-    return await advanceDebate({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python }, { id: String(req.id) });
+    return await advanceDebate({
+      repoRoot: ctx.repoRoot,
+      dataRoot: ctx.dataRoot,
+      python: ctx.python,
+      signal,
+      ...(llm ? { llm } : {}),
+    }, { id: String(req.id) });
   } catch (e) {
     if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
     throw e;

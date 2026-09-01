@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
-import { ServiceError, assertArgs, chatSend, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
+import { ServiceError, assertArgs, chatSend, debateAdvance, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { detectPython } from "../src/init.ts";
 
@@ -494,6 +494,15 @@ test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可�
       `${JSON.stringify(llm)} 应报 bad_llm/${want}`,
     );
   }
+  fs.rmSync(ctx.dataRoot, { recursive: true, force: true });
+});
+
+test("🔴 /debate/:id/advance 同样在边界校验 llm，不让畸形密钥进入模型层", async () => {
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-debate-llmshape-")), python: "python3", node: process.execPath, providerEnvKey: null };
+  await assert.rejects(
+    () => debateAdvance(ctx, { id: "not-created", llm: { provider: "mimo", apiKey: { secret: "x" } } }),
+    (e: unknown) => e instanceof ServiceError && e.code === "bad_llm" && e.message.includes("llm.apiKey 必须是字符串"),
+  );
   fs.rmSync(ctx.dataRoot, { recursive: true, force: true });
 });
 

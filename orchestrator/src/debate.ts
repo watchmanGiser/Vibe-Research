@@ -19,6 +19,7 @@ import { auditNumbers } from "./arithmetic.ts";
 import { ChatError, chatSend } from "./chat.ts";
 import { claimTokens, numberBound } from "./number_fidelity.ts";
 import { currentPlugin } from "./plugin.ts";
+import type { LlmOverride } from "./runtime_provider.ts";
 
 export class DebateError extends Error {
   code: string;
@@ -235,10 +236,10 @@ export function startDebate(req: {
 
 /** 跑下一个待跑的阶段。一次一个 —— 界面据此逐段显示,不用干等整场。 */
 /** 一轮对话的最小签名。**测试注入用** —— 单测不该真去起引擎(又慢又在并发下 EPIPE) */
-export type ChatFn = (message: string, session: string) => Promise<string>;
+export type ChatFn = (message: string, session: string, llm?: LlmOverride) => Promise<string>;
 
 export async function advanceDebate(
-  opts: { repoRoot: string; dataRoot?: string; python?: string },
+  opts: { repoRoot: string; dataRoot?: string; python?: string; signal?: AbortSignal; llm?: LlmOverride },
   req: { id: string },
   chat?: ChatFn,
 ): Promise<DebateState> {
@@ -293,8 +294,11 @@ export async function advanceDebate(
     // 资料包 + 前置产出 + 角色指令都在这一条里 —— 用户手打的 4000 上限对它不适用
     const session = `debate-${s.id}-${sd.id}`;
     stage.text = chat
-      ? await chat(message, session)
-      : (await chatSend({ ...opts, maxMessage: MAX_MESSAGE }, { session, message })).reply;
+      ? await chat(message, session, opts.llm)
+      : (await chatSend(
+        { repoRoot: opts.repoRoot, dataRoot: opts.dataRoot, python: opts.python, signal: opts.signal, maxMessage: MAX_MESSAGE },
+        { session, message, ...(opts.llm ? { llm: opts.llm } : {}) },
+      )).reply;
     stage.status = "done";
     // 🔴 **产出落定就地自查**。引用来的数字能跟资料包比对,算出来的数字比不了 ——
     //    后者是唯一一类「谁都没在看」的数字,而它就摆在核对过的数字旁边,看着一样可信。

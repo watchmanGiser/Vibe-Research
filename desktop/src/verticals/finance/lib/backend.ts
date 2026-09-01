@@ -69,7 +69,9 @@ export function friendlyAgentError(error: unknown): string {
 }
 
 const isAgentPath = (path: string): boolean =>
-  path === "/chat" || path === "/translate-headlines" || path === "/local-agents/codex/login" || path.startsWith("/guided-tool/");
+  path === "/chat" || path === "/connection-probe" || path === "/translate-headlines" ||
+  path === "/local-agents/codex/login" || path.startsWith("/guided-tool/") ||
+  /^\/debate\/[^/]+\/advance$/.test(path);
 
 /** 一条证据。所有端点的 evidence 元素都是这个形状,所以一套读法能服务全部端点。 */
 export interface Evidence {
@@ -292,8 +294,15 @@ export const backend = {
   },
   debateStart: (symbol: string, depth?: string) =>
     call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol, ...(depth ? { depth } : {}) }) }),
-  debateAdvance: (id: string) =>
-    call<DebateState>(`/debate/${encodeURIComponent(id)}/advance`, { method: "POST", body: "{}" }),
+  debateAdvance: async (id: string, signal?: AbortSignal, llm?: unknown) => {
+    const use = requestLlm(llm);
+    await ensureSelectedLocalAgentReady(use);
+    return await call<DebateState>(`/debate/${encodeURIComponent(id)}/advance`, {
+      method: "POST",
+      body: JSON.stringify(use !== undefined ? { llm: use } : {}),
+      signal,
+    });
+  },
 
   /** 端点观测序列(跨运行累积)。⚠️ 只在**完整研究运行**时追加,手动点看板不写 —— 稀疏是正常的 */
   series: (endpoint: string) =>
