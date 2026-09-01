@@ -65,6 +65,12 @@ python3 -m venv "$staging_dir/.venv"
 "$staging_dir/.venv/bin/python" -m pip install --disable-pip-version-check \
   -r "$staging_dir/.agents/skills/data-access/scripts/requirements.txt"
 chown -R ubuntu:ubuntu "$staging_dir"
+
+# tar --no-same-permissions 会应用调用方的 umask；部署账户采用严格 umask 时，目录可能变成
+# 0700，导致 Nginx 无法遍历到公开前端。只开放静态构建目录，不放宽源码、虚拟环境或 .local。
+chmod 0755 "$staging_dir" "$staging_dir/desktop"
+find "$staging_dir/desktop/dist" -type d -exec chmod 0755 {} +
+find "$staging_dir/desktop/dist" -type f -exec chmod 0644 {} +
 mv "$staging_dir" "$release_dir"
 
 previous="$(readlink -f "$current_link" 2>/dev/null || true)"
