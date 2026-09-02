@@ -13,6 +13,7 @@ import { Watchlist } from "@/pages/Watchlist";
 import { Research } from "@/pages/Research";
 import { MyReports } from "@/pages/MyReports";
 import { Notes } from "@/pages/Notes";
+import { Realtime } from "@/pages/Realtime";
 import { Settings } from "@/pages/Settings";
 
 export const router = createBrowserRouter([
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
     element: <Layout />,
     children: [
       { path: "/", element: <Home /> },
+      { path: "/realtime", element: <Realtime /> },
       { path: "/daily-review", element: <DailyReview /> },
       { path: "/intel", element: <Intel /> },
       { path: "/intel/:tab", element: <Intel /> },
@@ -39,4 +41,6 @@ export const router = createBrowserRouter([
       { path: "/settings", element: <Settings /> },
     ],
   },
-]);
+], {
+  basename: import.meta.env.BASE_URL,
+});

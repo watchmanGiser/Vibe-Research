@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, Home, LayoutGrid, LineChart, Microscope, Moon, Newspaper, NotebookPen, Radar, Rss, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
+  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, Home, LayoutGrid, LineChart, MessageSquareText, Microscope, Moon, Newspaper, NotebookPen, Radar, RadioTower, Rss, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AiPageProvider } from "../../../../core/ai/pageContext";
@@ -20,6 +20,7 @@ const X_URL = "https://x.com/linsizhen";
 
 const NAV = [
   { to: "/", icon: Home, label: "首页" },
+  { to: "/realtime", icon: RadioTower, label: "实时" },
   { to: "/daily-review", icon: Activity, label: "每日复盘" },
   { to: "/intel", icon: Radar, label: "资讯雷达" },
   { to: "/signals", icon: Thermometer, label: "产业信号" },
@@ -38,6 +39,7 @@ const NAV = [
 const INTEL_LINKS = [
   { to: "/intel/investment-news", icon: Rss, label: "Investment News" },
   { to: "/intel/news", icon: Newspaper, label: "公开新闻" },
+  { to: "/intel/semi", icon: MessageSquareText, label: "Semi动态" },
   { to: "/intel/filings", icon: FileText, label: "A股公告" },
   { to: "/intel/events", icon: TrendingUp, label: "事件概率" },
 ];
@@ -172,7 +174,17 @@ export function Layout() {
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && (group ? <span className="flex-1">{label}</span> : label)}
+                  {!collapsed && (
+                    <span className={cn("flex min-w-0 items-center gap-2", group && "flex-1")}>
+                      <span className="truncate">{label}</span>
+                      {to === "/realtime" && (
+                        <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-500">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                          LIVE
+                        </span>
+                      )}
+                    </span>
+                  )}
                   {/* 导航组：小三角展开/收起子栏目（点三角不跳转，点文字仍进总览页） */}
                   {group && !collapsed && (
                     <span
@@ -307,18 +319,21 @@ export function Layout() {
           控制台打开时是把内容**挤上去**（flex 收缩），不是盖在上面：
           这块面板的用处就是"一边看着页面一边聊"，浮层会把正在看的表格盖住。 */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <main className="flex-1 overflow-auto">
+        <main className={cn("flex-1", pathname === "/realtime" ? "overflow-hidden" : "overflow-auto")}>
           {/* 🔴 右上角那个固定的 AI 按钮会压在这一片上，所以留出它的宽度 ——
               不留的话，窄窗口下它会盖住页面自己的操作按钮（刷新之类），而宽窗口下看不出问题。 */}
-          <div className="mx-auto max-w-6xl px-6 py-6 pr-24">
+          <div className={cn(
+            "mx-auto",
+            pathname === "/realtime" ? "h-full max-w-none p-3" : "max-w-6xl px-6 py-6 pr-24",
+          )}>
             <Outlet />
           </div>
         </main>
-        {pathname !== "/" && <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />}
+        {pathname !== "/" && pathname !== "/realtime" && <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />}
       </div>
 
       {/* 每一页都有的 AI 入口：位置固定，聊的是当前页登记的上下文 */}
-      {pathname !== "/" && <FinanceAiDock />}
+      {pathname !== "/" && pathname !== "/realtime" && <FinanceAiDock />}
     </div>
     </AiPageProvider>
   );
