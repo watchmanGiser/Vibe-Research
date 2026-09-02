@@ -7,6 +7,7 @@ commit_sha="${2:?用法: build-release.sh <输出 tar.gz> <40位 commit sha>}"
 
 [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "commit sha 格式错误" >&2; exit 2; }
 [[ -f "$repo_root/desktop/dist/index.html" ]] || { echo "请先构建 desktop/dist" >&2; exit 2; }
+node "$repo_root/scripts/check-guangzhou-customizations.mjs"
 
 stage="$(mktemp -d)"
 trap 'rm -rf -- "$stage"' EXIT
