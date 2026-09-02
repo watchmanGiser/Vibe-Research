@@ -11,6 +11,7 @@
  *    底座 token 浏览器永远拿不到;模型 key 是**用户自己的**,存在他自己的 localStorage 里,
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
+import { apiUrl } from "./api-base.ts";
 import { readUserLlm } from "./llmStore.ts";
 
 export class ApiError extends Error {
@@ -133,7 +134,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const agentPath = isAgentPath(path);
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(apiUrl(path), {
       ...init,
       headers: {
         Accept: "application/json",
