@@ -1339,6 +1339,8 @@ async function hkCashflowOf(code: string): Promise<HkCashflow> {
 
 export const api = {
   health: () => backend.health().then((h) => ({ ok: h.ok })),
+  semiTweets: (limit = 100) => backend.semiTweets(limit),
+  semiStatus: () => backend.semiStatus(),
 
   quote: (codes: string) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean)),
   valuation: valuationOf,

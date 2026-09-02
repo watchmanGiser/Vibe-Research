@@ -189,6 +189,18 @@ export const backend = {
   health: () => call<{ ok: boolean; version: string }>("/health"),
   product: () => call<ProductInfo>("/product"),
   localAgents: () => call<LocalAgentStatus[]>("/local-agents"),
+  semiTweets: (limit = 100) => call<{
+    source: string; count: number; total: number; translated: number; pushed_at?: string; transport?: string;
+    items: Array<{
+      id: string; handle?: string; author_name?: string; author_screen?: string;
+      created_ts?: number; text?: string; zh?: string; take?: string; category?: string;
+      likes?: number; retweets?: number; replies?: number;
+    }>;
+  }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
+  semiStatus: () => call<{
+    running: boolean; mode: string; last_error?: string; source_cooldown_remaining?: number;
+    counts?: { total?: number; translated?: number }; pushed_at?: string; transport?: string;
+  }>("/semi/status"),
   startCodexLogin: () => call<{ state: "started" | "pending" }>("/local-agents/codex/login", {
     method: "POST", body: "{}",
   }),

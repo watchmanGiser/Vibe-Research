@@ -18,6 +18,7 @@ import crypto from "node:crypto";
 import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
+import { fetchSemi, SemiUpstreamError } from "./semi.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -73,7 +74,7 @@ const SECURITY_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-r
 const HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; sandbox";
 
 /** Cookie 只对这些只读 GET 路由有效(白名单,而不是"任何 GET");其余路由只认 Bearer */
-export const COOKIE_GET_ROUTES: readonly RegExp[] = [/^\/ui$/, /^\/ui\/runs\/[^/]+$/, /^\/runs$/, /^\/runs\/[^/]+\/(viewer|report|status)$/];
+export const COOKIE_GET_ROUTES: readonly RegExp[] = [/^\/ui$/, /^\/ui\/runs\/[^/]+$/, /^\/runs$/, /^\/runs\/[^/]+\/(viewer|report|status)$/, /^\/semi\/(health|status|tweets)$/];
 
 /** `max` 只对明确需要大体积的路由放宽(导入要带 base64 文件);其余一律用默认 256KB */
 function readBody(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
@@ -184,6 +185,14 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       const parts = url.pathname.split("/").filter(Boolean);
       const q = Object.fromEntries(url.searchParams.entries());
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
+      if (req.method === "GET" && url.pathname === "/semi/health") return send(res, 200, await fetchSemi("/api/health"));
+      if (req.method === "GET" && url.pathname === "/semi/status") return send(res, 200, await fetchSemi("/api/status"));
+      if (req.method === "GET" && url.pathname === "/semi/tweets") {
+        const params = new URLSearchParams();
+        if (q.limit) params.set("limit", q.limit);
+        if (q.since) params.set("since", q.since);
+        return send(res, 200, await fetchSemi("/api/tweets", params));
+      }
       // 设置页要看的有效配置。**只读** —— 不提供任何写入密钥的入口(见 service.productInfo)
       if (req.method === "GET" && url.pathname === "/product") return send(res, 200, productInfo(ctx));
       if (req.method === "GET" && url.pathname === "/local-agents") return send(res, 200, await localAgents(ctx));
