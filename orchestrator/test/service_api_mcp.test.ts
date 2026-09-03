@@ -47,8 +47,9 @@ a=sys.argv; ep=a[a.index('--endpoint')+1]; out=a[a.index('--out-dir')+1]; sym=a[
 extra=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
 os.makedirs(os.path.join(out,'raw'),exist_ok=True); open(os.path.join(out,'raw','fake.json'),'w').write('{}')
 envs={k:os.environ.get(k) for k in ('IWENCAI_API_KEY','VRA_SEC_CONTACT','OPENAI_API_KEY','MY_SECRET_TOKEN','VRA_ALLOW_INSECURE_TLS')}
-env={"script":ep,"symbol":sym,"market":"SZ","status":"ok","fetched_at":"2026-01-01T00:00:00+08:00","primary_source":"fake","used_sources":["fake"],"evidence":[{"id":"ev-abcdef","symbol":sym,"market":"SZ","field":"f","value":1,"unit":"个","currency":"n/a","period":"2026-01-01","as_of":"2026-01-01","source":"fake","endpoint":ep,"fetched_at":"2026-01-01T00:00:00+08:00","adjustment":"not_applicable","raw_ref":"raw/fake.json"}],"extra":{"args":extra,"envs":envs},"errors":[],"missing":[]}
-json.dump(env, open(os.path.join(out,'fetch',ep+'.json'),'w')); print(json.dumps(env)); sys.stderr.write('token=abc123 https://x/y?key=SECRET\\n'); sys.exit(0)
+status='partial' if ep == 'tx_quotes_batch' else 'ok'
+env={"script":ep,"symbol":sym,"market":"SZ","status":status,"fetched_at":"2026-01-01T00:00:00+08:00","primary_source":"fake","used_sources":["fake"],"evidence":[{"id":"ev-abcdef","symbol":sym,"market":"SZ","field":"f","value":1,"unit":"个","currency":"n/a","period":"2026-01-01","as_of":"2026-01-01","source":"fake","endpoint":ep,"fetched_at":"2026-01-01T00:00:00+08:00","adjustment":"not_applicable","raw_ref":"raw/fake.json"}],"extra":{"args":extra,"envs":envs},"errors":[],"missing":[]}
+json.dump(env, open(os.path.join(out,'fetch',ep+'.json'),'w')); print(json.dumps(env)); sys.stderr.write('token=abc123 https://x/y?key=SECRET\\n'); sys.exit(2 if status == 'partial' else 0)
 `);
   const dataRoot = path.join(repo, ".local");
   fs.mkdirSync(path.join(dataRoot, "runs", "r1", "stages"), { recursive: true });
@@ -437,6 +438,19 @@ test("🔴 cache_only 没快照就报错,绝不偷偷联网", async () => {
     () => fetchEndpoint(ctx, { endpoint: "fetch_quote", symbol: "300308", consistency: { mode: "cache_only" } }),
     (e: unknown) => e instanceof ServiceError && e.code === "no_snapshot",
   );
+});
+
+test("🔴 partial 且有证据也要写快照——否则页面每次打开都像从未抓取", async () => {
+  const ctx = fakeCtx();
+  const req = { endpoint: "tx_quotes_batch", args: { codes: ["300308"] } };
+  const first = await fetchEndpoint(ctx, { ...req, consistency: { mode: "fresh" } });
+  assert.equal(first.exit_code, 2);
+  assert.equal((first.envelope as { status: string }).status, "partial");
+  assert.equal(first.cached, false);
+
+  const archived = await fetchEndpoint(ctx, { ...req, consistency: { mode: "cache_only" } });
+  assert.equal(archived.cached, true, "部分成功的有效证据应在下次打开时立即可用");
+  assert.equal((archived.envelope as { evidence: unknown[] }).evidence.length, 1);
 });
 
 /**

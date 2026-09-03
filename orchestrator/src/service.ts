@@ -281,7 +281,10 @@ export async function fetchEndpoint(
     //    `failed` 或一条证据都没有,就是这次没取到,别让它变成用户下次打开看到的东西。
     const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, (r) => {
       const env = r.envelope as { status?: unknown; evidence?: unknown };
-      return r.exit_code === 0 && env.status !== "failed" && Array.isArray(env.evidence) && env.evidence.length > 0;
+      return (r.exit_code === 0 || r.exit_code === 2)
+        && (env.status === "ok" || env.status === "partial")
+        && Array.isArray(env.evidence)
+        && env.evidence.length > 0;
     });
     return snap ? { ...result, fetched_at: snap.fetched_at } : result;
   })();
