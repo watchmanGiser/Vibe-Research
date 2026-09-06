@@ -71,6 +71,13 @@ export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.Proce
   // 不存在时 Node 会把它报成近似“二进制 ENOENT”，因此退到已存在的数据根；
   // 对话入口会先建立会话目录，仍使用精确 cwd。
   const configCwd = fs.existsSync(cfg.runDir) ? cfg.runDir : fs.existsSync(cfg.dataRoot) ? cfg.dataRoot : cfg.repoRoot;
+  // 🔴 无论调用方传来什么 env，发现命令必须跑在**产品自己的 CODEX_HOME** 下（#44）：
+  //    否则 codex 回落到用户全局 ~/.codex，枚举出的 server 在线程真正使用的 CODEX_HOME 里
+  //    并不存在，投影成 `{ enabled = false }` 后被 codex ≥0.149 判 `invalid transport`。
+  //    codex ≥0.149 对不存在的 CODEX_HOME 直接报 `failed to resolve CODEX_HOME`；产品目录
+  //    尚未初始化时（首次运行、单测的临时数据根）先建出来 —— 与 hooks.ts / skills_isolation.ts 同一做法。
+  fs.mkdirSync(cfg.codexHome, { recursive: true });
+  const discoveryEnv = { ...engineEnv, CODEX_HOME: cfg.codexHome };
   const effective = spawnSync(codexBin, [
     "-c", "features.apps=false",
     "-c", "features.enable_mcp_apps=false",
@@ -78,7 +85,7 @@ export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.Proce
     "mcp", "list", "--json",
   ], {
     cwd: configCwd,
-    env: engineEnv,
+    env: discoveryEnv,
     encoding: "utf8",
     timeout: 20_000,
     windowsHide: true,

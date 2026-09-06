@@ -125,7 +125,12 @@ function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv, workingD
   const base = codexOptionsFor({ ...cfg, executionMode: "shell_hooks", codexPath: realCodex }, engineEnv);
   // MCP 发现必须与线程的真实 cwd 完全一致。对话 cwd 是 dataRoot/chat/<session>，
   // 不是研究配置的 cfg.runDir；用错目录会漏掉会话目录下的 `.codex/config.toml`。
-  const mcpIsolation = mcpIsolationOverride({ ...cfg, runDir: workingDirectory }, undefined, engineEnv);
+  // 🔴 也必须与线程的真实 **env** 完全一致（#44）：`engineEnv` 是裸的 process.env / rt.env，
+  //    不含产品的 CODEX_HOME；拿它去跑 `codex mcp list` 读到的是用户全局 ~/.codex 的 MCP，
+  //    而线程本身跑在产品 CODEX_HOME 下、那些 server 并不存在 —— 把它们投影成只含
+  //    `enabled = false` 的根表，codex ≥0.149 直接报 `invalid transport`，对话与「测试并保存」全挂。
+  //    `base.env` 就是线程收到的那份 env（含 CODEX_HOME），发现与执行必须共用它。
+  const mcpIsolation = mcpIsolationOverride({ ...cfg, runDir: workingDirectory }, undefined, base.env);
   const baseConfig = (base.config ?? {}) as Record<string, unknown>;
   const foreignSkills = listForeignSkillPaths({ codexHome: cfg.codexHome, productRoots: [cfg.repoRoot] });
   return {

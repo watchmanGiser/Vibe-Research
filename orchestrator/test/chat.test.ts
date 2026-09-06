@@ -80,6 +80,32 @@ test("对话线程的硬约束必须真的传给引擎:无本地工具 / 只读 
   assert.ok((skills.config ?? []).every((x) => x.enabled === false), "发现到的用户 skill 必须全部禁用");
 });
 
+test("MCP 隔离发现必须在产品 CODEX_HOME 下枚举 —— 用户全局 ~/.codex 的 MCP 不得混进对话覆盖（#44）", async () => {
+  resetChatSessions();
+  const cap: Cap = { prompts: [] };
+  const root = tmp();
+  // 伪造一个带全局 MCP 的用户主目录。codex ≥0.149 会把「线程 CODEX_HOME 里不存在、
+  // 却被投影成只含 enabled=false」的 server 判成 invalid transport，整轮对话直接失败。
+  const fakeHome = tmp();
+  fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, ".codex", "config.toml"), '[mcp_servers.ghost_global]\ncommand = "ghost-bin"\nargs = ["mcp"]\nenabled = false\n');
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CODEX_HOME: process.env.CODEX_HOME };
+  process.env.HOME = fakeHome;
+  process.env.USERPROFILE = fakeHome;
+  delete process.env.CODEX_HOME;
+  try {
+    await chatSend({ repoRoot: REPO, dataRoot: root, python: TEST_PYTHON }, { session: "t44", message: "你好" }, fakeCodex("好", cap));
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+  const overrides = cap.codexOptions?.configOverrides as string[];
+  const mcp = overrides.find((x) => x.startsWith("mcp_servers="));
+  assert.ok(mcp, "对话轮必须带 MCP 隔离覆盖");
+  assert.ok(!mcp.includes("ghost_global"), `全局 ~/.codex 的 MCP 不得进入对话覆盖：${mcp}`);
+  const env = cap.codexOptions?.env as Record<string, string>;
+  assert.ok(env.CODEX_HOME && !env.CODEX_HOME.startsWith(fakeHome), "线程必须跑在产品 CODEX_HOME 下，而不是用户主目录");
+});
+
 test("工作目录必须在数据根之下 —— 不在指令根后代里时宪法加载不到,而引擎不报错", async () => {
   resetChatSessions();
   const root = tmp();
