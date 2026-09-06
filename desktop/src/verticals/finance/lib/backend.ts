@@ -194,6 +194,7 @@ export const backend = {
     items: Array<{
       id: string; handle?: string; author_name?: string; author_screen?: string;
       created_ts?: number; text?: string; zh?: string; take?: string; category?: string;
+      url?: string; author_avatar?: string; media?: string | string[]; translated?: number;
       likes?: number; retweets?: number; replies?: number;
     }>;
   }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),

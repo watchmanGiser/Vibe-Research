@@ -13,7 +13,7 @@ stage="$(mktemp -d)"
 trap 'rm -rf -- "$stage"' EXIT
 
 rsync -a \
-  --exclude '/.git/' \
+  --exclude '/.git' \
   --exclude '/.github/' \
   --exclude '/.local/' \
   --exclude '/.venv/' \

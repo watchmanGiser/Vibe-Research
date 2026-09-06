@@ -170,7 +170,9 @@ test("首页 Agent 是可发送的真实对话区,不是装饰输入框", () => 
   assert.match(hasLlmBlock, /loadUserLlm\(\)/, "全局 Agent 必须识别浏览器里配置的模型");
   assert.match(hasLlmBlock, /cached\s*\?\s*cached\.provider\.key_present\s*:\s*optimistic/,
     "全局 Agent 必须识别只在后端配置的模型，不能与首页状态分叉");
-  assert.match(layoutSrc, /pathname !== "\/" && <FinanceAiDock/);
+  // 广州实时页占满可视区域，不显示会遮挡行情的悬浮入口与底部控制台。
+  assert.match(layoutSrc, /pathname !== "\/" && pathname !== "\/realtime" && <FinanceAiDock/);
+  assert.match(layoutSrc, /pathname !== "\/" && pathname !== "\/realtime" && <FinanceAiConsole/);
   assert.match(layoutSrc, /document\.getElementById\("home-agent"\)/);
 });
 

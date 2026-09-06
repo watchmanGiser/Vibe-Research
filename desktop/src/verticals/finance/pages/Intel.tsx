@@ -436,7 +436,8 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
 interface SemiTweet {
   id: string; handle?: string; author_name?: string; author_screen?: string;
   created_ts?: number; text?: string; zh?: string; take?: string; category?: string;
-  url?: string; likes?: number; retweets?: number; replies?: number; translated?: number;
+  url?: string; author_avatar?: string; media?: string | string[];
+  likes?: number; retweets?: number; replies?: number; translated?: number;
 }
 interface SemiFeed {
   source: string; count: number; total: number; translated: number; pushed_at?: string; transport?: string; items: SemiTweet[];
@@ -449,6 +450,18 @@ interface SemiStatus {
 function formatSemiTime(ts?: number): string {
   if (!ts) return "时间待确认";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ts * 1000));
+}
+
+function semiMediaList(value?: string | string[]): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string" && item.length > 0);
+  } catch {
+    // 兼容旧快照中的单个图片地址。
+  }
+  return value.startsWith(("http")) || value.startsWith("/") ? [value] : [];
 }
 
 function SemiPanel() {
@@ -496,9 +509,11 @@ function SemiPanel() {
             const author = item.author_name || item.author_screen || item.handle || "Semi";
             const main = item.zh || item.text || "";
             const showOriginal = Boolean(item.zh && item.text && item.zh !== item.text);
+            const images = semiMediaList(item.media);
             return (
               <a key={item.id} href={item.url || undefined} target={item.url ? "_blank" : undefined} rel="noreferrer" className="group block py-3 first:pt-0 last:pb-0">
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  {item.author_avatar && <img src={item.author_avatar} alt="" loading="lazy" decoding="async" className="h-7 w-7 rounded-full border border-border/60 object-cover" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
                   <span className="font-medium text-primary">{author}</span>
                   {item.author_screen && <span>@{item.author_screen}</span>}
                   <span>{formatSemiTime(item.created_ts)}</span>
@@ -507,6 +522,9 @@ function SemiPanel() {
                 </div>
                 <p className="whitespace-pre-wrap text-sm leading-6 group-hover:text-primary">{main}</p>
                 {showOriginal && <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground/70">原文：{item.text}</p>}
+                {images.length > 0 && <div className={cn("mt-2 grid gap-2 overflow-hidden rounded-xl", images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+                  {images.slice(0, 4).map((src, index) => <img key={`${item.id}-${index}`} src={src} alt={`${author} 动态配图 ${index + 1}`} loading="lazy" decoding="async" className="max-h-96 w-full rounded-xl border border-border/50 bg-muted/20 object-contain" onError={(event) => { event.currentTarget.style.display = "none"; }} />)}
+                </div>}
                 {item.take && <div className="mt-2 rounded-lg border border-primary/15 bg-primary/5 px-3 py-2 text-xs leading-5 text-muted-foreground"><b className="text-primary">解读：</b>{item.take}</div>}
               </a>
             );

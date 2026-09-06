@@ -29,6 +29,8 @@ requireText("desktop/src/verticals/finance/lib/api.ts", ["semiTweets:", "semiSta
 requireText("desktop/src/verticals/finance/lib/backend.ts", ["/semi/tweets", "/semi/status", "apiUrl(path)"]);
 requireText("orchestrator/src/api.ts", ["/semi/health", "/semi/status", "/semi/tweets", "SemiUpstreamError"]);
 requireText("orchestrator/src/semi.ts", ["SEMI_SNAPSHOT_FILE", "/opt/vibe-research/shared/semi/latest.json", "nova-push"]);
+requireText("desktop/src/verticals/finance/pages/Intel.tsx", ["function semiMediaList", "item.author_avatar", "images.slice(0, 4)", 'item.zh || item.text']);
+requireText("orchestrator/src/service.ts", ["r.exit_code === 2", 'env.status === "partial"']);
 requireText("desktop/vite.config.ts", ['base: process.env.VITE_BASE_PATH ?? "/vibe-research/"']);
 requireText("desktop/src/verticals/finance/lib/api-base.ts", ["BASE_URL", "`${base}/api${suffix}`"]);
 
