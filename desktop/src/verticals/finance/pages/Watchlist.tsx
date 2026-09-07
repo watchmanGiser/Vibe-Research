@@ -98,7 +98,7 @@ export function Watchlist() {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleLive}
-              title={live ? "关闭实时行情" : "开启实时行情（交易时段每 3 秒自动刷新）"}
+              title={live ? "关闭自动取数" : "开启自动取数（交易时段每次请求结束后等 3 秒；上游可能延迟）"}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors",
                 live
@@ -117,7 +117,7 @@ export function Watchlist() {
                   )}
                 />
               </span>
-              实时行情
+              自动取数
             </button>
           </div>
         }
@@ -163,10 +163,10 @@ export function Watchlist() {
                 {live && !polling && codes.length > 0 && (
                   <span>{isTradingHours(codes) ? "已暂停（页面未激活）" : "当前关注市场均为非交易时段"}</span>
                 )}
-                {polling && <span className="text-primary/80">实时 · 每 3 秒</span>}
+                {polling && <span className="text-primary/80">自动取数 · 间隔 3 秒</span>}
                 {updatedAt && (
-                  <span className="font-mono">
-                    {new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}
+                  <span className="font-mono" title="所显示价格中最早的源取数时刻；不是成交时间，上游可能延迟">
+                    最早快照取数 {new Date(updatedAt).toLocaleString("zh-CN", { hour12: false })}
                   </span>
                 )}
               </>

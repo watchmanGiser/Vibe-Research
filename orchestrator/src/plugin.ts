@@ -147,6 +147,8 @@ export interface Plugin {
   readonly extraTopics: Readonly<Record<string, readonly string[]>>;
   /** 报告必须出现的章节标题 */
   readonly reportSections: readonly string[];
+  /** Explicit sections excluded from numeric-fidelity checking; absent means none. */
+  readonly fidelityExcludedSections?: readonly string[];
   /** 证据枚举:市场代码与数据口径 —— 换个垂类这两样都不存在或完全不同 */
   readonly evidence: {
     readonly markets: readonly string[];
@@ -255,6 +257,8 @@ export interface Plugin {
   readonly topicSections: Readonly<Record<string, string>>;
   /** 变化提醒默认盯的证据字段 */
   readonly alertFields: readonly string[];
+  /** Fields whose ISO day is an observation date, not a reporting period. Compare latest observation per source. */
+  readonly alertObservationFields?: readonly string[];
   /** doctor 的 calc 自检:跑哪个函数、什么入参、期望什么值 */
   /** doctor 的自检计算;垂类若没有确定性计算库,给 `null`(第二垂类验收装置打红) */
   readonly selfTestCalc: { readonly fn: string; readonly args: Readonly<Record<string, unknown>>; readonly expect: number } | null;
@@ -304,6 +308,8 @@ export interface Plugin {
     readonly label: string;
     /** `python -m <module>` 的模块名 */
     readonly module: string;
+    /** false 只用于不联网、不落盘、无需模型的确定性工具；省略或 true 都必须走 Codex Agent */
+    readonly requiresAgent?: boolean;
     /** 超时(毫秒)。不给则用 Core 默认 */
     readonly timeoutMs?: number;
   }>>;
@@ -331,6 +337,8 @@ export interface Plugin {
   readonly debate?: {
     readonly dossierEndpoints: readonly string[];
     readonly stages: readonly DebateStageDef[];
+    /** Optional presentation contract; omitted plugins retain their existing language behavior. */
+    readonly outputLanguage?: "zh";
     /**
      * **深度档位** → 这一档真正要跑哪几个阶段(按 id)。
      * 🔴 界面上那个"一轮 / 两轮"原来是**装饰性的**:选了没有任何效果,永远跑完整五阶段,
@@ -560,6 +568,7 @@ const TOOLS = {
       label: NONBLANK,
       // 只许 python 模块名的合法形状:`a.b_c`。有 `/`、`..`、空格的一律拒
       module: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$" },
+      requiresAgent: { type: "boolean" },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 1800000 },
     },
   },
@@ -604,6 +613,7 @@ export const PLUGIN_SCHEMA = {
     //    金融包每个阶段恰好都有,于是这条一直没暴露 —— 第二个垂类的验收装置当场打红(全审 r4)。
     extraTopics: mapOf(strArray()),
     reportSections: strArray({ minItems: 1, uniqueItems: true }),
+    fidelityExcludedSections: strArray({ uniqueItems: true }),
     evidence: {
       type: "object", additionalProperties: false,
       required: ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"],
@@ -632,6 +642,7 @@ export const PLUGIN_SCHEMA = {
     topicMerge: mapOf({ type: "string" }),
     // ⚠️ 允许为空:垂类可以没有预警字段
     alertFields: strArray(),
+    alertObservationFields: strArray({ uniqueItems: true }),
     // 可选:不声明台账的垂类完全合法(第二垂类验收装置里就没有)
     ledger: LEDGER,
     tools: TOOLS,
@@ -642,6 +653,7 @@ export const PLUGIN_SCHEMA = {
     debate: {
       type: "object", additionalProperties: false, required: ["dossierEndpoints", "stages"],
       properties: {
+        outputLanguage: { enum: ["zh"] },
         dossierEndpoints: strArray({ minItems: 1, uniqueItems: true }),
         stages: {
           type: "array", minItems: 2,
@@ -862,6 +874,7 @@ interface Decl {
   stageCalcs: Record<string, string[]>;
   extraTopics: Record<string, string[]>;
   reportSections: string[];
+  fidelityExcludedSections: string[];
   evidence: { markets: string[]; adjustments: string[]; marketWideCodes: string[]; marketWideOnlyCodes: string[] };
   standardColumns: string[];
   standardColumnLabels: Record<string, string>;
@@ -877,9 +890,10 @@ interface Decl {
   extraSectionsAfter: string;
   topicMerge: Record<string, string>;
   alertFields: string[];
+  alertObservationFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
-  tools?: Record<string, { label: string; module: string; timeoutMs?: number }>;
+  tools?: Record<string, { label: string; module: string; requiresAgent?: boolean; timeoutMs?: number }>;
   pageQueries?: Plugin["pageQueries"];
   pageContext?: Plugin["pageContext"];
   debate?: Plugin["debate"];
@@ -892,6 +906,12 @@ interface Decl {
  * 它是逐字段的,说不了"A 的键必须等于 B 的元素""X 必须是 Y 的子集"。
  */
 function checkRelations(d: Decl): void {
+  for (const section of d.fidelityExcludedSections) {
+    if (!d.reportSections.includes(section)) throw new Error(`Plugin.fidelityExcludedSections: ${section} is not in reportSections`);
+  }
+  for (const field of d.alertObservationFields) {
+    if (!d.alertFields.includes(field)) throw new Error(`Plugin.alertObservationFields: ${field} is not in alertFields`);
+  }
   for (const what of ["stageScripts", "stageCalcs", "extraTopics", "stageLabels"] as const) {
     assertKeysMatchStages(what, Object.keys(d[what]), d.stages);
   }
@@ -1124,6 +1144,8 @@ function register(plugin: Plugin): void {
   if (afterFetch !== undefined && typeof afterFetch !== "function") throw new Error("Plugin.afterFetch 必须是函数或不提供");
   const baselinePeriod = plugin.baselinePeriod;
   const lexicon = plugin.lexicon;
+  const rawFidelityExcludedSections = plugin.fidelityExcludedSections;
+  const rawAlertObservationFields = plugin.alertObservationFields;
   // 🔴 `stageScripts` 也只读一次:多余字段检查与 decl 投影**共用这一份**。
   //    我一度让检查再 `tableOnce(plugin.stageScripts)` 一遍 —— 同一个根因第三次犯(Codex ajv-r2)。
   const rawScripts = tableOnce("stageScripts", plugin.stageScripts);
@@ -1137,6 +1159,7 @@ function register(plugin: Plugin): void {
     stageCalcs: tableOnce("stageCalcs", plugin.stageCalcs),
     extraTopics: tableOnce("extraTopics", plugin.extraTopics),
     reportSections: cp(plugin.reportSections),
+    fidelityExcludedSections: cp(rawFidelityExcludedSections === undefined ? [] : rawFidelityExcludedSections),
     evidence: {
       markets: cp(ev?.markets), adjustments: cp(ev?.adjustments),
       marketWideCodes: cp(ev?.marketWideCodes), marketWideOnlyCodes: cp(ev?.marketWideOnlyCodes),
@@ -1155,6 +1178,7 @@ function register(plugin: Plugin): void {
     extraSectionsAfter: plugin.extraSectionsAfter,
     topicMerge: tableOnce("topicMerge", plugin.topicMerge),
     alertFields: cp(plugin.alertFields),
+    alertObservationFields: cp(rawAlertObservationFields === undefined ? [] : rawAlertObservationFields),
     // null(垂类没有确定性计算库)要原样传给 ajv —— 拆成 { fn: undefined } 会被判成"缺字段的对象"
     selfTestCalc: st == null ? null : { fn: st.fn, args: st.args, expect: st.expect },
     // 台账种类表:**只读一次**,而且只在真的声明了才放进 decl ——
@@ -1306,6 +1330,7 @@ function register(plugin: Plugin): void {
     stageCalcs: mapValues(d.stageCalcs, (v) => Object.freeze([...v])) as Record<string, readonly string[]>,
     extraTopics: mapValues(d.extraTopics, (v) => Object.freeze([...v])) as Record<string, readonly string[]>,
     reportSections: Object.freeze([...d.reportSections]),
+    fidelityExcludedSections: Object.freeze([...d.fidelityExcludedSections]),
     evidence: Object.freeze({
       markets: Object.freeze([...d.evidence.markets]),
       adjustments: Object.freeze([...d.evidence.adjustments]),
@@ -1338,6 +1363,7 @@ function register(plugin: Plugin): void {
     extraSectionsAfter: d.extraSectionsAfter,
     topicMerge: Object.freeze({ ...d.topicMerge }),
     alertFields: Object.freeze([...d.alertFields]),
+    alertObservationFields: Object.freeze([...d.alertObservationFields]),
     selfTestCalc: d.selfTestCalc ? Object.freeze({ fn: d.selfTestCalc.fn, args: args as Record<string, unknown>, expect: d.selfTestCalc.expect }) : null,
     // 摄入时已 deepFrozen;没声明就整个不带这个键(消费方一律走 `?.`)
     ...(d.ledger === undefined ? {} : { ledger: d.ledger }),

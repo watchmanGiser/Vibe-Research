@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigation } from "react-router-dom";
 import {
-  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, Home, LayoutGrid, LineChart, MessageSquareText, Microscope, Moon, Newspaper, NotebookPen, Radar, RadioTower, Rss, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
+  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, Globe, MessageSquareText, RadioTower, Home, LayoutGrid, Microscope, Menu, X, Moon, Newspaper, NotebookPen, Radar, Rss, Settings, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PhoenixTreeLogo } from "@/components/ui/PhoenixTreeLogo";
 import { AiPageProvider } from "../../../../core/ai/pageContext";
-import { FinanceAiConsole, FinanceAiDock } from "@/components/ui/FinanceAiDock";
+import { FinanceAiDock } from "@/components/ui/FinanceAiDock";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { storageGet, storageSet } from "@/lib/storage";
+import { useAiRuntime } from "@/hooks/useAiRuntime";
+import { aiConnectionLabel } from "@/lib/aiConnection";
+import { AgentToggle } from "@/components/ui/AgentToggle";
 
-// 具名导入：只把 version 打进产物，不会把整个 package.json 塞进 bundle
-import { version as PKG_VERSION } from "../../../../../package.json";
-
-// 版本号只从 package.json 读，不再各处写死（发 v0.3.0 时三处忘改停在 v0.2.2，#20）
-const APP_VERSION = `v${PKG_VERSION}`;
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
 // 作者联系方式
 const X_URL = "https://x.com/linsizhen";
@@ -70,25 +69,21 @@ const NAV_GROUPS: Record<string, { storageKey: string; links: typeof SIGNAL_LINK
 
 export function Layout() {
   const { pathname } = useLocation();
+  const navigation = useNavigation();
+  const aiRuntime = useAiRuntime();
   const { dark, toggle } = useDarkMode();
   const navRef = useRef<HTMLElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const [mobile, setMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const closeMobileNav = () => {
+    setMobileOpen(false);
+    // The opener is inert until React commits the closed state.
+    requestAnimationFrame(() => menuRef.current?.focus());
+  };
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
-  // 底部 AI 控制台开着没。记住选择：它是"工作台的一部分"，不是弹一下就关的东西
-  const [consoleOpen, setConsoleOpen] = useState(() => storageGet("vr-ai-console") === "open");
-  const toggleConsole = () => {
-    setConsoleOpen((v) => {
-      storageSet("vr-ai-console", v ? "closed" : "open");
-      return !v;
-    });
-  };
-  const openAgent = () => {
-    if (pathname === "/") {
-      document.getElementById("home-agent")?.scrollIntoView({ behavior: "smooth", block: "center" });
-      document.querySelector<HTMLTextAreaElement>('#home-agent textarea')?.focus({ preventScroll: true });
-      return;
-    }
-    toggleConsole();
-  };
   // 各导航组子栏目的展开状态（默认展开；按组记住用户的选择）
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
     // 🔴 **默认收起**：一打开先看到一层干净的总览，要什么再展开。
@@ -108,7 +103,7 @@ export function Layout() {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
 
-  // 品牌区与 Agent 入口都是固定高度，导航本身会滚动。窗口偏矮时当前页可能刚好落在
+  // 品牌区与底部链接固定，导航本身会滚动。窗口偏矮时当前页可能刚好落在
   // 可视区外（例如最底部的「接入 AI」只露出一条边）—— 路由变化后把当前项拉回视野。
   useEffect(() => {
     const nav = navRef.current;
@@ -121,220 +116,141 @@ export function Layout() {
     if (a.bottom > n.bottom - breathingRoom) nav.scrollTop += a.bottom - (n.bottom - breathingRoom);
   }, [pathname, collapsed]);
 
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => {
+      setMobile(query.matches);
+      setMobileOpen(false);
+      if (query.matches && sidebarRef.current?.contains(document.activeElement)) {
+        requestAnimationFrame(() => menuRef.current?.focus());
+      }
+    };
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
+  useEffect(() => {
+    if (!mobileOpen || !mobile) return;
+    sidebarRef.current?.querySelector<HTMLElement>("a,button")?.focus();
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); closeMobileNav(); }
+      if (event.key !== "Tab") return;
+      const items = [...(sidebarRef.current?.querySelectorAll<HTMLElement>("a,button:not(:disabled)") ?? [])];
+      const first = items[0], last = items.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", keyboard);
+    return () => document.removeEventListener("keydown", keyboard);
+  }, [mobile, mobileOpen]);
+  const compact = collapsed && !mobile;
+  const currentTitle = NAV.find(n => n.to === pathname)?.label
+    ?? Object.values(NAV_GROUPS).flatMap(g => g.links).find(n => n.to === pathname)?.label
+    ?? "工作空间";
+
   return (
     <AiPageProvider>
-    <div className="flex h-screen">
-      {/* Sidebar */}
-      <aside className={cn(
-        "glass z-10 m-2 flex shrink-0 flex-col rounded-2xl transition-all duration-200",
-        collapsed ? "w-14" : "w-60",
-      )}>
-        {/* Brand */}
-        <div className={cn("border-b border-border/50", collapsed ? "flex justify-center p-3" : "p-4")}>
-          <Link to="/" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2")}>
-            <LineChart className="h-6 w-6 shrink-0 text-primary text-glow" />
-            {!collapsed && (
-              <span className="text-lg font-extrabold tracking-tight">
-                Vibe-<span className="text-primary">Research</span>
-              </span>
-            )}
-          </Link>
-          {!collapsed && (
-            <>
-              <p className="mt-1 text-[11px] text-muted-foreground">本地金融研究 Agent · A股/美股/港股</p>
-              <div
-                data-testid="codex-harness-badge"
-                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/[0.07] px-2 py-1 text-[10px] font-medium tracking-wide text-muted-foreground"
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.8)]" />
-                Built on Codex Harness
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Nav */}
-        <nav ref={navRef} className={cn("flex-1 space-y-1 overflow-auto", collapsed ? "p-1.5" : "p-2.5")}>
-          {NAV.map(({ to, icon: Icon, label }) => {
-            const active = pathname === to;
-            const group = NAV_GROUPS[to];
-            const groupOpen = group ? openGroups[to] : false;
-            return (
-              <div key={to}>
-                <Link
-                  to={to}
-                  aria-current={active ? "page" : undefined}
-                  title={collapsed ? label : undefined}
-                  className={cn(
-                    "flex items-center rounded-lg text-sm transition-colors",
-                    collapsed ? "justify-center p-2.5" : "gap-2.5 px-3 py-2.5",
-                    active
-                      ? "bg-primary/15 font-medium text-primary shadow-glow"
-                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                  )}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && (
-                    <span className={cn("flex min-w-0 items-center gap-2", group && "flex-1")}>
-                      <span className="truncate">{label}</span>
-                      {to === "/realtime" && (
-                        <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-500">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                          LIVE
-                        </span>
-                      )}
-                    </span>
-                  )}
-                  {/* 导航组：小三角展开/收起子栏目（点三角不跳转，点文字仍进总览页） */}
-                  {group && !collapsed && (
-                    <span
-                      role="button"
-                      aria-label={groupOpen ? "收起子栏目" : "展开子栏目"}
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleGroup(to); }}
-                      className="-mr-1 rounded p-0.5 hover:bg-muted/60"
-                    >
-                      <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", !groupOpen && "-rotate-90")} />
-                    </span>
-                  )}
+      <a className="workspace-skip" href="#workspace-main" onClick={e => {
+        e.preventDefault(); setMobileOpen(false);
+        requestAnimationFrame(() => mainRef.current?.focus());
+      }}>跳到内容</a>
+      <div className="flex h-dvh overflow-hidden">
+        {mobile && mobileOpen && <button className="fixed inset-0 z-40 bg-black/60" tabIndex={-1}
+          aria-label="关闭导航遮罩" onClick={closeMobileNav} />}
+        <aside ref={sidebarRef} aria-label="产品侧栏" className={cn(
+          "workspace-sidebar z-50 flex shrink-0 flex-col",
+          mobile ? (mobileOpen ? "fixed inset-y-0 left-0 w-[228px]" : "hidden") : compact ? "w-14" : "w-[228px]",
+        )}>
+          <div className={cn("border-b border-border", compact ? "p-3" : "px-5 py-4")}>
+            <div className="flex items-center justify-between">
+              <Link to="/" aria-label="Vibe Research 首页" className="flex items-center gap-2.5">
+                <PhoenixTreeLogo className="h-8 w-6 shrink-0 text-primary" />
+                {!compact && <span className="workspace-brand text-lg font-semibold tracking-tight">Vibe-<span className="text-primary">Research</span></span>}
+              </Link>
+              {mobile && <button aria-label="关闭导航" className="p-1" onClick={closeMobileNav}><X className="h-4 w-4" /></button>}
+            </div>
+            {!compact && <div data-ai-identity className="mt-2 space-y-1">
+              <p className="text-[10px] leading-4 text-muted-foreground">本地金融研究 Agent · A股 / 美股 / 港股</p>
+                <Link to="/settings" data-testid="ai-runtime-badge" title="查看或更改已保存的 AI 接入" className="flex min-w-0 items-start gap-1 text-[10px] leading-5 text-muted-foreground hover:text-primary">
+                  <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-primary" /><span>{aiConnectionLabel(aiRuntime)}</span>
                 </Link>
-
-                {/* 子栏目（缩进）；收起侧栏时恒显示图标入口 */}
-                {group && (groupOpen || collapsed) && (
-                  <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-4 border-l border-border/40 pl-1.5")}>
-                    {group.links.map(({ to: st, icon: SIcon, label: slabel }) => {
-                      const sactive = pathname === st;
-                      return (
-                        <Link
-                          key={st}
-                          to={st}
-                          title={collapsed ? slabel : undefined}
-                          className={cn(
-                            "flex items-center rounded-lg transition-colors",
-                            collapsed ? "justify-center p-2" : "gap-2 px-2.5 py-1.5 text-[13px]",
-                            sactive
-                              ? "bg-primary/10 font-medium text-primary"
-                              : "text-muted-foreground/80 hover:bg-muted/40 hover:text-foreground",
-                          )}
-                        >
-                          <SIcon className="h-3.5 w-3.5 shrink-0" />
-                          {!collapsed && slabel}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
+                <AgentToggle showHint />
+            </div>}
+            {compact && <div className="mt-3 flex justify-center"><AgentToggle compact /></div>}
+          </div>
+          <nav ref={navRef} aria-label="原产品板块导航" className={cn("min-h-0 flex-1 space-y-0.5 overflow-auto py-3", compact ? "px-1.5" : "px-3")}>
+            {NAV.map(({ to, icon: Icon, label }) => {
+              const active = pathname === to;
+              const group = NAV_GROUPS[to];
+              const groupOpen = group ? !!openGroups[to] : false;
+              return <div key={to}>
+                <div className="flex items-center">
+                  <Link to={to} aria-label={label} aria-current={active ? "page" : undefined} title={compact ? label : undefined}
+                    onClick={() => { if (mobile) { setMobileOpen(false); requestAnimationFrame(() => mainRef.current?.focus()); } }}
+                    className={cn("workspace-nav-link flex min-w-0 flex-1 items-center text-[13px] transition-colors",
+                      compact ? "justify-center p-2.5" : "gap-3 px-3 py-2.5",
+                      active ? "font-medium" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground")}>
+                    <Icon className="h-4 w-4 shrink-0" />{!compact && <span>{label}</span>}
+                    {!compact && to === "/realtime" && <span className="ml-auto text-[9px] font-semibold text-emerald-500">LIVE</span>}
+                  </Link>
+                  {group && !compact && <button type="button" aria-label={`${groupOpen ? "收起" : "展开"}${label}子栏目`}
+                    aria-expanded={groupOpen} onClick={() => toggleGroup(to)}
+                    className="rounded p-2 text-muted-foreground hover:bg-muted/60">
+                    <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", !groupOpen && "-rotate-90")} />
+                  </button>}
+                </div>
+                {group && (groupOpen || compact) && <div className={cn("mt-1 space-y-0.5", !compact && "ml-5 border-l border-border pl-2")}>
+                  {group.links.map(({ to: st, icon: SIcon, label: slabel }) => <Link key={st} to={st}
+                    aria-label={slabel} title={compact ? slabel : undefined} aria-current={pathname === st ? "page" : undefined}
+                    onClick={() => { if (mobile) { setMobileOpen(false); requestAnimationFrame(() => mainRef.current?.focus()); } }}
+                    className={cn("workspace-nav-link flex items-center text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                      compact ? "justify-center p-2" : "gap-2 px-2 py-1.5")}>
+                    <SIcon className="h-3.5 w-3.5 shrink-0" />{!compact && slabel}
+                  </Link>)}
+                </div>}
+              </div>;
+            })}
+          </nav>
+          <div className={cn("border-t border-border", compact ? "p-1.5" : "p-3")}>
+            <div className={cn("flex items-center text-muted-foreground", compact ? "flex-col gap-3" : "justify-between gap-2")}>
+              <a href="https://phoenixtree.ai/" target="_blank" rel="noopener noreferrer"
+                aria-label="Phoenix Tree AI 官网（新标签页打开）" title="Phoenix Tree AI 官网（新标签页打开）"
+                className="flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded text-xs text-primary hover:bg-muted/50">
+                <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {!compact && <span>phoenixtree.ai</span>}
+              </a>
+              <div className={cn("flex gap-2", compact && "flex-col")}>
+                <a href={X_URL} target="_blank" rel="noreferrer" aria-label="联系作者" title="联系作者 · X @linsizhen"><UserRound className="h-3.5 w-3.5" /></a>
+                <a href={REPO_URL} target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub"><Github className="h-3.5 w-3.5" /></a>
+                {!mobile && <button onClick={() => setCollapsed(!collapsed)} aria-label={compact ? "展开侧栏" : "收起侧栏"} title={compact ? "展开侧栏" : "收起侧栏"}>
+                  {compact ? <ChevronsRight className="h-3.5 w-3.5" /> : <ChevronsLeft className="h-3.5 w-3.5" />}
+                </button>}
               </div>
-            );
-          })}
-        </nav>
-
-        {/* 🔴 AI 入口 —— **刻意与上面那些导航项长得不一样**：它不是"再一个页面"，
-            而是把底部控制台推上来的开关。
-            ⚠️ 早先是实心橙 + 纯白字：够显眼，但在这套玻璃质感的暗色界面里显得生硬
-            （Simon：「橙色加白色有点傻」）。现在改成**橙作强调、不作底色**：
-            很淡的橙色渐变底 + 细橙环 + 橙图标 + 常规前景色文字，
-            打开时只把这几样各自加重一档，并给图标一个极缓的呼吸 —— 灵动但不吵。 */}
-        <div className={cn(collapsed ? "px-1.5 pb-1.5" : "px-2.5 pb-2.5")}>
-          <button
-            onClick={openAgent}
-            title={pathname === "/" ? "转到首页 Agent" : consoleOpen ? "收起 Agent" : "打开 Agent"}
-            aria-pressed={pathname === "/" ? undefined : consoleOpen}
-            className={cn(
-              "group relative flex w-full items-center overflow-hidden rounded-xl",
-              "font-medium tracking-wide transition-all duration-300",
-              "bg-gradient-to-br from-primary/[0.18] via-primary/[0.10] to-transparent",
-              "text-foreground/90 ring-1 ring-inset",
-              collapsed ? "justify-center p-2" : "gap-2.5 px-3 py-2.5 text-sm",
-              pathname === "/" || consoleOpen
-                ? "ring-primary/50 shadow-[0_0_18px_-4px_hsl(var(--primary)/0.55)] text-foreground"
-                : "ring-primary/25 hover:ring-primary/45 hover:from-primary/[0.26] hover:via-primary/[0.14]",
-            )}
-          >
-            {/* 掠过的高光：只在悬停时走一次，给它一点"活气"而不是一直在动 */}
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-y-0 -left-full w-1/2 skew-x-12 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent transition-[left] duration-700 ease-out group-hover:left-full"
-            />
-            <Sparkles
-              className={cn(
-                "h-4 w-4 shrink-0 text-primary transition-transform duration-300",
-                pathname === "/" || consoleOpen ? "animate-[pulse_2.4s_ease-in-out_infinite]" : "group-hover:scale-110",
-              )}
-            />
-            {!collapsed && <span className="text-glow">Agent</span>}
-            {!collapsed && (
-              // 小标做成一枚淡色胶囊,而不是压透明度的白字 —— 后者在浅色主题下几乎看不见
-              <span className={cn(
-                "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-normal transition-colors",
-                pathname === "/" || consoleOpen ? "bg-primary/20 text-primary" : "bg-foreground/[0.06] text-muted-foreground",
-              )}>
-                {pathname === "/" ? "首页" : consoleOpen ? "收起" : "对话"}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* Footer */}
-        <div className={cn("border-t border-border/50", collapsed ? "flex flex-col items-center gap-2 p-2" : "space-y-2 p-3")}>
-          {collapsed ? (
-            <>
-              <button onClick={toggle} className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title={dark ? "亮色" : "暗色"}>
+            </div>
+          </div>
+        </aside>
+        <div inert={mobile && mobileOpen} className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <header className="workspace-topbar flex h-16 shrink-0 items-center justify-between gap-3 px-4 md:px-8">
+            <div className="flex min-w-0 items-center gap-3 text-xs">
+              <button ref={menuRef} aria-label="打开导航" onClick={() => setMobileOpen(true)} className="p-1 md:hidden"><Menu className="h-4 w-4" /></button>
+              <span className="hidden text-muted-foreground sm:inline">工作空间 /</span><strong className="truncate font-medium">{currentTitle}</strong>
+            </div>
+            <div className={cn("flex items-center gap-3", pathname !== "/" && "mr-24")}>
+              <span className="hidden text-[10px] text-muted-foreground lg:inline">本地金融研究工作台</span>
+              <button onClick={toggle} className="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={dark ? "切换为浅色" : "切换为深色"}>
                 {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </button>
-              <a href={X_URL} target="_blank" rel="noreferrer" className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title="联系作者 · X @linsizhen">
-                <UserRound className="h-4 w-4" />
-              </a>
-              <button onClick={() => setCollapsed(false)} className="rounded p-1.5 text-muted-foreground transition-colors hover:text-foreground" title="展开">
-                <ChevronsRight className="h-4 w-4" />
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between">
-                <button onClick={toggle} className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
-                  {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-                  {dark ? "亮色" : "暗色"}
-                </button>
-                <div className="flex items-center gap-2">
-                  <a href={X_URL} target="_blank" rel="noreferrer" className="text-muted-foreground transition-colors hover:text-foreground" title="联系作者 · X @linsizhen">
-                    <UserRound className="h-3.5 w-3.5" />
-                  </a>
-                  <a href={REPO_URL} target="_blank" rel="noreferrer" className="text-muted-foreground transition-colors hover:text-foreground" title="GitHub">
-                    <Github className="h-3.5 w-3.5" />
-                  </a>
-                  <button onClick={() => setCollapsed(true)} className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground" title="收起">
-                    <ChevronsLeft className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              <p className="text-[11px] leading-relaxed text-muted-foreground/60">
-                {APP_VERSION} · 不荐股 · 不预测 · 无倾向
-              </p>
-            </>
-          )}
+            </div>
+          </header>
+          <main ref={mainRef} id="workspace-main" tabIndex={-1} className={cn("min-h-0 flex-1", pathname === "/realtime" ? "overflow-hidden" : "overflow-auto")}>
+            <div className={pathname === "/realtime" ? "h-full max-w-none p-3" : "workspace-content"} aria-busy={navigation.state !== "idle"}>
+              {navigation.state !== "idle" && <p role="status" className="mb-3 text-sm text-muted-foreground">正在打开页面…</p>}
+              <Outlet />
+            </div>
+          </main>
         </div>
-      </aside>
-
-      {/* Main —— 🔴 上下两块：内容在上、AI 控制台在下。
-          控制台打开时是把内容**挤上去**（flex 收缩），不是盖在上面：
-          这块面板的用处就是"一边看着页面一边聊"，浮层会把正在看的表格盖住。 */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <main className={cn("flex-1", pathname === "/realtime" ? "overflow-hidden" : "overflow-auto")}>
-          {/* 🔴 右上角那个固定的 AI 按钮会压在这一片上，所以留出它的宽度 ——
-              不留的话，窄窗口下它会盖住页面自己的操作按钮（刷新之类），而宽窗口下看不出问题。 */}
-          <div className={cn(
-            "mx-auto",
-            pathname === "/realtime" ? "h-full max-w-none p-3" : "max-w-6xl px-6 py-6 pr-24",
-          )}>
-            <Outlet />
-          </div>
-        </main>
-        {pathname !== "/" && pathname !== "/realtime" && <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />}
+        <div inert={mobile && mobileOpen}>{pathname !== "/" && pathname !== "/realtime" && <FinanceAiDock />}</div>
       </div>
-
-      {/* 每一页都有的 AI 入口：位置固定，聊的是当前页登记的上下文 */}
-      {pathname !== "/" && pathname !== "/realtime" && <FinanceAiDock />}
-    </div>
     </AiPageProvider>
   );
 }

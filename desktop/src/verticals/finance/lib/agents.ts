@@ -10,7 +10,8 @@
  *    —— 谁也不能靠编数字赢。资料包为空(取数全挂)时**直接拒开**,
  *    因为没有共同事实的"辩论"只是两段作文,而它看着像做过功课。
  */
-import { ApiError, backend, type DebateNumberAudit, type DebateState } from "./backend";
+import { ApiError, backend, type DebateNumberAudit, type DebateState } from "./backend.ts";
+import { newAnalysisSession } from "./analysisSession.ts";
 
 export type DebateStage = "bull" | "bear" | "bull_rebut" | "bear_rebut" | "referee";
 
@@ -68,8 +69,10 @@ export async function debateStream(
   };
 
   try {
+    if (signal?.aborted) return undefined;
     handlers.onStatus?.("正在现拉资料包(五个角色共用同一份)…");
-    let st = await backend.debateStart(code, String(rounds));
+    if (signal?.aborted) return undefined;
+    let st = await backend.debateStart(code, String(rounds), signal);
     if (signal?.aborted) return undefined;
     handlers.onDossierReady?.([{ title: `资料包 ${st.evidence_count} 条证据`, tool: "取数层" }], st.gaps);
     handlers.onStatus?.(st.gaps.length ? "资料包就绪(有缺口,已告知双方),辩论开始" : "资料包就绪,辩论开始");
@@ -77,11 +80,17 @@ export async function debateStream(
 
     while (!st.done) {
       if (signal?.aborted) return undefined;
-      st = await backend.debateAdvance(st.id);
+      st = await backend.debateAdvance(st.id, signal);
+      if (signal?.aborted) return undefined;
       push(st);
     }
     // 🔴 全挂了要说全挂了 —— 只看 done 会把"五段全空"读成"辩论正常完成"
-    if (st.outcome === "failed") handlers.onError?.("所有阶段都失败了:不是「没有分歧」,是根本没跑起来");
+    const shutdownFailure = st.stages.find(s => s.error?.startsWith("agent_shutdown_failed:"))?.error;
+    if (shutdownFailure) handlers.onError?.(shutdownFailure);
+    else if (st.outcome === "cancelled") handlers.onStatus?.("辩论已中止");
+    else if (st.outcome === "failed") handlers.onError?.(st.stages.some(s => s.status === "done")
+      ? "辩论未能完成，已完成部分保留；请检查阶段错误"
+      : "所有阶段都失败了:不是「没有分歧」,是根本没跑起来");
     else handlers.onStatus?.(st.outcome === "completed_with_errors" ? "跑完了,但有环节没打上" : "辩论结束");
     return st;
   } catch (e) {
@@ -109,6 +118,7 @@ export async function reflectStream(
   signal?: AbortSignal,
 ): Promise<void> {
   try {
+    if (signal?.aborted) return;
     handlers.onStatus?.("审计中…");
     const msg = [
       "回头审下面这段我自己写的推理,逐条标出:哪些结论有数据撑着、哪些是脑补、最脆弱的一环在哪。",
@@ -118,7 +128,7 @@ export async function reflectStream(
       "",
       source || "(没有正文)",
     ].join("\n");
-    const r = await backend.chat(msg);
+    const r = await backend.chat(msg, newAnalysisSession("note-reflection"), signal);
     if (signal?.aborted) return;
     handlers.onDelta?.(r.reply);
     handlers.onDone?.(r.reply, false);

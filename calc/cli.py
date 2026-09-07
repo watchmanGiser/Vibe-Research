@@ -7,7 +7,7 @@
   python3 calc/cli.py list
 示例:
   python3 calc/cli.py pe_deducted_annualized --args '{"total_market_cap": 1000, "cap_unit": "亿元", "latest_quarter_deducted_profit": 1e9, "profit_unit": "元"}' --evidence ev-aaa ev-bbb
-  python3 calc/cli.py percentile_rank --args '{"history": {"history_csv": {"raw_ref": "raw/xxx.csv", "column": "peTTM", "where": {"tradestatus": "1"}}}, "current": 73.8}' --run-dir .local/runs/x --evidence ev-hist
+  python3 calc/cli.py percentile_rank --args '{"history": {"history_csv": {"raw_ref": "raw/xxx.csv", "column": "peTTM", "where": {"tradestatus": "1"}, "date_column": "date"}}, "current": 73.8}' --run-dir .local/runs/x --evidence ev-hist
   python3 calc/cli.py technical_indicators --args '{"klines": {"history_json": {"raw_ref": "raw/tencent_fqkline.json", "rows_path": "data.sz300308.qfqday", "columns": {"date": 0, "open": 1, "close": 2, "high": 3, "low": 4}}}}' --run-dir .local/runs/x --evidence ev-kline
   python3 calc/cli.py chip_distribution --args '{"klines": {"history_json": {"raw_ref": "raw/extracted_baostock_....json", "rows_path": "rows", "columns": {"date": "date", "high": "high", "low": "low", "close": "close", "turn": "turn"}, "where": {"tradestatus": "1"}}}}' --run-dir .local/runs/x --evidence ev-bs
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import date
 import hashlib
 import inspect
 import json
@@ -105,23 +106,26 @@ def _load_history_csv(spec: dict, run_dir: str | None) -> tuple[list, dict]:
     where = spec.get("where") or {}
     if not rel or not col:
         raise ValueError("history_csv 需要 raw_ref 与 column")
-    if Path(rel).is_absolute():
-        raise ValueError(f"history_csv.raw_ref 必须是运行目录内的相对路径(raw/...),不接受绝对路径:{rel!r}")
-    raw_root = Path(run_dir).resolve(strict=True) / "raw"
-    target = (Path(run_dir) / rel).resolve(strict=True)  # 解析符号链接后再校验
-    try:
-        target.relative_to(raw_root.resolve(strict=True))
-    except ValueError as e:
-        raise ValueError(f"history_csv.raw_ref 越出运行目录的 raw/:{rel!r}") from e
-    if not target.is_file():
-        raise ValueError(f"history_csv.raw_ref 不是文件:{rel!r}")
+    target = _raw_target(rel, run_dir, "history_csv")
     data = target.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     rows = list(csv.DictReader(data.decode("utf-8").splitlines()))
     if not rows or col not in rows[0]:
         raise ValueError(f"CSV 无列 {col!r}")
-    vals = [r[col] for r in rows if all(str(r.get(k)) == str(v) for k, v in where.items())]
-    return vals, {"raw_ref": rel, "sha256": sha, "column": col, "where": where, "rows_total": len(rows), "rows_used": len(vals)}
+    selected = [r for r in rows if all(str(r.get(k)) == str(v) for k, v in where.items())]
+    vals = [r[col] for r in selected]
+    record = {"raw_ref": rel, "sha256": sha, "column": col, "where": where, "rows_total": len(rows), "rows_used": len(vals)}
+    if "date_column" in spec:
+        date_col = spec["date_column"]
+        if not isinstance(date_col, str) or date_col not in rows[0] or not selected:
+            raise ValueError("history_csv 日期列缺失或过滤后无行")
+        dates = [r[date_col] for r in selected]
+        if any(not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d or "") or date.fromisoformat(d).isoformat() != d for d in dates):
+            raise ValueError("history_csv 日期必须为有效 YYYY-MM-DD")
+        if dates != sorted(set(dates)):
+            raise ValueError("history_csv 日期必须严格递增且不重复")
+        record.update(date_column=date_col, period=f"{dates[0]}..{dates[-1]}")
+    return vals, record
 
 
 def _raw_target(rel: str, run_dir: str | None, kind: str) -> Path:
@@ -132,8 +136,10 @@ def _raw_target(rel: str, run_dir: str | None, kind: str) -> Path:
         raise ValueError(f"{kind} 需要 raw_ref")
     if Path(rel).is_absolute():
         raise ValueError(f"{kind}.raw_ref 必须是运行目录内的相对路径(raw/...),不接受绝对路径:{rel!r}")
-    if any(part in ("..", "") for part in Path(rel).parts) or not rel.startswith("raw/"):
-        raise ValueError(f"{kind}.raw_ref 必须形如 raw/<文件>,不得含 ..(同一文件只能有一种写法,保证身份唯一):{rel!r}")
+    # Path.parts erases '.' and duplicate separators before they can be checked.
+    # Reject ambiguous spelling in both loaders rather than minting another ID.
+    if any(part in ("..", ".", "") for part in rel.split("/")) or "\\" in rel or not rel.startswith("raw/"):
+        raise ValueError(f"{kind}.raw_ref 必须使用规范相对路径 raw/<文件>，不得含 ..、.、重复或反向分隔符:{rel!r}")
     raw_root = Path(run_dir).resolve(strict=True) / "raw"
     target = (Path(run_dir) / rel).resolve(strict=True)
     try:
@@ -235,6 +241,8 @@ def resolve_inputs(args: dict, run_dir: str | None) -> tuple[dict, dict, dict]:
             record[k] = rec
             ident[k] = {"history_csv": {"raw_ref": rec["raw_ref"], "column": rec["column"], "where": rec["where"],
                                         "sha256": rec["sha256"], "rows_used": rec["rows_used"]}}
+            if "date_column" in rec:
+                ident[k]["history_csv"].update(date_column=rec["date_column"], period=rec["period"])
         elif isinstance(v, dict) and "history_json" in v:
             rows, rec = _load_history_json(v["history_json"], run_dir)
             call_args[k] = rows
@@ -330,6 +338,13 @@ def main() -> None:
         print(_dump({"calculation_id": None, "function": a.function, "calc_version": CALC_VERSION, "inputs": None,
                      "inputs_resolved": {}, "inputs_refs": [], "output": _error_out(f"参数解析失败:{e}", "bad_args")}))
         sys.exit(3)
+    if a.function == "validate":
+        from calc.contracts import validate_contract
+        target = args.get("function")
+        target_args = args.get("args")
+        error = validate_contract(target if isinstance(target, str) else "", target_args, FUNCTIONS)
+        print(_dump({"valid": error is None, **({} if error is None else {"error": error})}))
+        sys.exit(0 if error is None else 3)
     result = run(a.function, args, list(a.evidence), list(a.calc), a.run_dir)
     print(_dump(result))
     st = result["output"]["status"]

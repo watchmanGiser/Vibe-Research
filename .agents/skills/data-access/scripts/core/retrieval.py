@@ -402,7 +402,11 @@ def _jina(url: str, max_chars: int, _e: dict) -> str:
     import urllib.request
     req = urllib.request.Request(f"https://r.jina.ai/{url}",
                                  headers={"User-Agent": "Mozilla/5.0 (vibe-research-agent)", "Accept": "text/plain"})
-    return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+    with urllib.request.urlopen(req, timeout=30) as response:
+        content = response.read(4_000_001)
+    if len(content) > 4_000_000:
+        raise ValueError("网页读取响应超过 4 MB，请缩小读取范围")
+    return content.decode("utf-8", "replace")
 
 
 def _cdp_page(url: str, max_chars: int, _e: dict) -> tuple[str, str]:

@@ -5,7 +5,8 @@
 import path from "node:path";
 
 import type { ProviderProfile } from "./productConfig.ts";
-import { providerEnv, type ProviderProfileFile } from "./providers.ts";
+import { providerEnv, type AuthMode, type ProviderProfileFile } from "./providers.ts";
+import type { LocalAgentId } from "./local_agent_runtime.ts";
 import { currentPlugin } from "./plugin.ts";
 import { buildStagePlan, criticalScripts as registryCriticalScripts, endpointsById, loadRegistry, type EndpointDef, type ScopeKind, type StagePlan } from "./registry.ts";
 
@@ -66,6 +67,12 @@ export interface RunConfig {
   symbol: string;
   /** 可选主体名：用于补充召回“只写名称、没写标识符”的用户资料。 */
   companyName?: string;
+  /** 产品任务层的关注点；只改变提示中的研究重点，不改变六阶段状态机与校验规则。 */
+  taskObjective?: string;
+  /** 产品任务层明确圈选的本地资料。存在时只召回这些 id，不按同代码扩到整库。 */
+  reportIds?: readonly string[];
+  /** 路由时看到的资料正文版本；长流程只接受这些版本，变化后明确失败而不偷读新内容。 */
+  reportRevisions?: Readonly<Record<string, string>>;
   market: string;
   runId: string;
   /** 产品根(安装后 = app/);AGENTS.md / skills / calc 均相对它 */
@@ -78,7 +85,7 @@ export interface RunConfig {
   codexPath: string | null;
   /** 产品自己的 CODEX_HOME(永不读写 ~/.codex) */
   codexHome: string;
-  provider: ProviderProfile;
+  provider: Omit<ProviderProfile, "auth"> & { auth: AuthMode | "subscription_login" };
   /** M4:provider 模板(openai 原生为 null 或 openai 模板);决定 Codex model_providers 注入与密钥环境变量名 */
   providerProfile: ProviderProfileFile | null;
   /** 相对产品根的 data-access 脚本目录 / calc CLI */
@@ -104,6 +111,15 @@ export interface RunConfig {
   hooksEnabled: boolean;
   /** 执行层:shell_hooks = POSIX 成熟链路;controlled_mcp = Windows 原生受控工具链(无 Shell / 无 lifecycle hooks) */
   executionMode?: "shell_hooks" | "controlled_mcp";
+  /**
+   * 用哪个引擎跑。`codex` = 官方引擎；`direct` = 直连 OpenAI 兼容端点；
+   * `local_agent` = 本机已登录的 Claude Code / WorkBuddy，通过产品受控 MCP 跑阶段。
+   * ⚠️ `executionMode` 是 **Codex 的**执行层概念,对 direct 无意义 —— 直连既没有 Shell 也不经 MCP,
+   *    它直接在本进程里调受控工具。两者不要混着判(要判"谁需要 turn 上下文"就用 needsTurnContext)。
+   */
+  engine: "codex" | "direct" | "local_agent";
+  /** 只在 engine=local_agent 时存在；来自已校验的请求级订阅档。 */
+  localAgent?: LocalAgentId;
   /** 运行目录已存在且非空时是否清空重来 */
   overwrite: boolean;
   /** 硬测试数据夹具目录:播种前几个阶段的产物并跳过它们(见 fixture.ts)。**播种运行一律按测试运行隔离** */
@@ -168,7 +184,7 @@ export const DEFAULT_ALLOWED_PATH_PREFIXES = ["/bin", "/usr", "/opt", "/sbin", "
 export const HOME_PREFIXES = ["/Users/", "/home/", "/root/", "C:\\Users\\"];
 
 /** 基础环境(取数与 Codex 子进程共用)。 */
-const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "PYTHONDONTWRITEBYTECODE",
   "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA"];
 /** 取数脚本(联网进程)的最小环境:只加代理与证书;**不含任何 Codex 凭据 / 配置目录**(AGENTS.md §5) */
 export const FETCH_ENV_KEYS = [...BASE_ENV_KEYS, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
@@ -178,13 +194,34 @@ export const CODEX_ENV_KEYS = [...FETCH_ENV_KEYS];
 
 export const DEFAULT_PROVIDER: ProviderProfile = { name: "openai", wire_api: "responses", base_url: null, env_key: "OPENAI_API_KEY", auth: "chatgpt_login" };
 
+/**
+ * 这次运行要不要在每个 turn 前写 turn 上下文(`.vibe/hook-context.json`)。
+ *
+ * 🔴 判据是**谁需要读它**,不是"用哪个执行模式":
+ *  - Codex 的 lifecycle hooks 读它(判当前阶段与 attempt);
+ *  - **受控工具**读它判当前阶段 —— `controlled_mcp` 与 `direct` 两条路都用受控工具,
+ *    拿不到就一律抛 `turn_context_missing`,那会让每个工具调用都失败。
+ * ⇒ 只有「Codex + shell_hooks + 显式关了 hooks」这一种组合不需要。
+ *
+ * ⚠️ 别退回去写成 `hooksEnabled || executionMode === "controlled_mcp"` —— 那是加入直连之前的口径,
+ *    直连会因此拿不到阶段上下文,表现为"每个工具都报 turn_context_missing"。
+ */
+export function needsTurnContext(cfg: Pick<RunConfig, "hooksEnabled" | "executionMode" | "engine">): boolean {
+  return cfg.hooksEnabled || cfg.executionMode === "controlled_mcp" || cfg.engine === "direct" || cfg.engine === "local_agent";
+}
+
 export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoRoot: string }): RunConfig {
   const runId = partial.runId ?? defaultRunId(partial.symbol);
   if (!RUN_ID_RE.test(runId)) throw new Error(`run-id 非法:${runId}(只允许字母数字 . _ -,≤64 字符)`);
   const repoRoot = path.resolve(partial.repoRoot);
   const dataRoot = path.resolve(partial.dataRoot ?? path.join(repoRoot, ".local"));
-  const executionMode = partial.executionMode ?? (process.platform === "win32" ? "controlled_mcp" : "shell_hooks");
-  // 🔴 根路径里不许有空白。执行层的命令扫描器按空白切 token 找绝对路径,路径里带空格就会被切断:
+  // Reuse the existing no-shell execution path for spaced installations. This is
+  // execution plumbing only: it does not change the user's provider or Agent switch.
+  const executionMode = partial.executionMode ?? (process.platform === "win32" || [repoRoot, dataRoot, partial.python ?? ""].some(p => /\s/.test(p)) ? "controlled_mcp" : "shell_hooks");
+  const engine = partial.engine ?? "codex";
+  if (engine === "local_agent" && !partial.localAgent) throw new Error("local_agent 引擎缺少已校验的本机 Agent 种类");
+  if (engine !== "local_agent" && partial.localAgent) throw new Error("localAgent 只能与 local_agent 引擎同时使用");
+  // 显式 shell_hooks 模式的根路径仍不许有空白。命令扫描器按空白切 token:
   //    `~/Library/Application Support/X/runs/…` 只剩 `/Users/…/Library/Application`,与允许前缀永远对不上,
   //    于是 agent 每一条引用运行目录绝对路径的命令都被拒(实测)。
   //    ⇒ 这里**提前拒绝并说清楚**,而不是改扫描器的分词(那会动到已用真实命令语料回归过的规则,风险更大)。
@@ -220,6 +257,9 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   return {
     symbol: partial.symbol,
     companyName: partial.companyName,
+    taskObjective: partial.taskObjective,
+    reportIds: partial.reportIds ? Object.freeze([...partial.reportIds]) : undefined,
+    reportRevisions: partial.reportRevisions ? Object.freeze({ ...partial.reportRevisions }) : undefined,
     market: partial.market ?? "",
     runId,
     repoRoot,
@@ -237,7 +277,7 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     reasoning: partial.reasoning,
     maxRetries: partial.maxRetries ?? 2,
     gateRetries: partial.gateRetries ?? 2,
-    turnTimeoutMs: partial.turnTimeoutMs ?? 20 * 60_000,
+    turnTimeoutMs: partial.turnTimeoutMs ?? 30 * 60_000,
     fetchTimeoutMs: partial.fetchTimeoutMs ?? 180_000,
     forbiddenPathPatterns: partial.forbiddenPathPatterns ?? DEFAULT_FORBIDDEN_PATHS,
     // ⚠️ 必须含 dataRoot:分离安装时运行目录在产品根之外,而真实安装位置多半在 `~/Library/Application Support`
@@ -245,8 +285,11 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     //    (临时目录测不出这条:`/var/folders` 恰好在默认白名单里。)
     allowedPathPrefixes: partial.allowedPathPrefixes ?? [...DEFAULT_ALLOWED_PATH_PREFIXES, repoRoot, dataRoot, interpreterRoot(python)],
     noAgent: partial.noAgent ?? false,
-    hooksEnabled: executionMode === "controlled_mcp" ? false : (partial.hooksEnabled ?? true),
-    executionMode,
+    // 直连没有 Codex 的 lifecycle hooks —— 这里强制关掉,免得别处按 hooksEnabled 去装钩子、读钩子日志
+    hooksEnabled: (executionMode === "controlled_mcp" || engine === "direct" || engine === "local_agent") ? false : (partial.hooksEnabled ?? true),
+    executionMode: engine === "local_agent" ? "controlled_mcp" : executionMode,
+    engine,
+    ...(partial.localAgent ? { localAgent: partial.localAgent } : {}),
     overwrite: partial.overwrite ?? false,
     seedFrom: partial.seedFrom,
     allowStaleFixture: partial.allowStaleFixture ?? false,
@@ -305,6 +348,9 @@ export const fetchEnv = (extra: Record<string, string> = {}, source: NodeJS.Proc
 export function codexEnvFor(cfg: Pick<RunConfig, "codexHome" | "provider"> & { providerProfile?: ProviderProfileFile | null }, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const extra: Record<string, string> = { CODEX_HOME: cfg.codexHome };
   if (cfg.providerProfile) {
+    if (cfg.provider.auth === "subscription_login") {
+      throw new Error("subscription_login 只属于本机 Agent，不能进入 Codex provider 环境");
+    }
     Object.assign(extra, providerEnv(cfg.providerProfile, cfg.provider.auth, env));  // M4:按模板把 env_key(与 env_http_headers 引用的变量)按名透传;openai 另加 CODEX_API_KEY
   } else if (cfg.provider.auth === "api_key") {
     const key = env[cfg.provider.env_key];

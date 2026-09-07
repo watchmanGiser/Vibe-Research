@@ -16,7 +16,7 @@ const code = (fn: () => unknown): string => {
   try { fn(); return "(没抛)"; } catch (e) { return e instanceof RuntimeProviderError ? e.code : `(不是 RuntimeProviderError:${e})`; }
 };
 
-test("runtime provider:Codex 与 Claude 订阅各走自己的真实 runtime,未知 cli-* 报错", () => {
+test("runtime provider:三种订阅各走自己的真实 runtime,未知 cli-* 报错", () => {
   const ok = resolveRuntimeProvider(REPO, DATA, { provider: "cli-codex" }, BASE_ENV);
   assert.equal(ok.runtime, "codex");
   if (ok.runtime !== "codex") assert.fail("Codex 订阅应走 Codex runtime");
@@ -26,6 +26,8 @@ test("runtime provider:Codex 与 Claude 订阅各走自己的真实 runtime,未�
 
   const claude = resolveRuntimeProvider(REPO, DATA, { provider: "cli-claude" }, BASE_ENV);
   assert.deepEqual(claude, { runtime: "local-agent", agent: "claude", model: null, env: BASE_ENV });
+  const codebuddy = resolveRuntimeProvider(REPO, DATA, { provider: "cli-codebuddy" }, BASE_ENV);
+  assert.deepEqual(codebuddy, { runtime: "local-agent", agent: "codebuddy", model: null, env: BASE_ENV });
   // 没有安全禁工具适配器的 CLI 不得回落到 Codex。
   for (const p of ["cli-qwen", "cli-deepseek", "cli-anything"]) {
     assert.equal(code(() => resolveRuntimeProvider(REPO, DATA, { provider: p }, BASE_ENV)), "unsupported_cli", p);
@@ -74,6 +76,18 @@ test("runtime provider:自填端点合成的档案要过契约校验,协议不�
 
   assert.equal(code(() => resolveRuntimeProvider(REPO, DATA, { provider: "custom", apiKey: "k" }, BASE_ENV)), "missing_base_url");
   assert.equal(code(() => resolveRuntimeProvider(REPO, DATA, { provider: "custom", baseURL: "https://a.b/v1" }, BASE_ENV)), "missing_key");
+});
+
+test("runtime provider:本地 HTTP 可配置;远程 HTTP 与伪装回环拒绝", () => {
+  for (const baseURL of ["http://127.0.0.1:11434/v1", "http://localhost:1234/v1", "http://[::1]:1234/v1"]) {
+    const r = resolveRuntimeProvider(REPO, DATA, { provider: "custom", apiKey: "local-test", baseURL }, BASE_ENV);
+    assert.notEqual(r.runtime, "local-agent");
+    if (r.runtime === "local-agent") throw new Error("wrong runtime");
+    assert.equal(r.profile.base_url, baseURL);
+  }
+  for (const baseURL of ["http://192.168.1.2/v1", "http://example.com/v1", "http://localhost.evil.test/v1", "http://127.0.0.1@evil.test/v1", "http://127.1/v1"]) {
+    assert.equal(code(() => resolveRuntimeProvider(REPO, DATA, { provider: "custom", apiKey: "local-test", baseURL }, BASE_ENV)), "bad_base_url");
+  }
 });
 
 test("runtime provider:baseURL 只放 http(s);认不出的 provider 报错而不是换一家去打", () => {

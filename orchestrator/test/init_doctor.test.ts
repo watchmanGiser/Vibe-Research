@@ -51,7 +51,8 @@ test("init:幂等建 .local 目录 + 配置骨架 + .gitignore;已有配置不�
   const cfg = JSON.parse(fs.readFileSync(path.join(repo, ".local", "config.json"), "utf8"));
   assert.equal(cfg.python, null); assert.deepEqual(cfg.provider, { profile: "openai" }, "骨架不写 auth(写了会被当成用户显式指定)");
   assert.ok(fs.readFileSync(path.join(repo, ".gitignore"), "utf8").split("\n").includes(".local/"));
-  assert.ok(r1.next.some((n) => n.includes("codex login")) && r1.next.every((n) => !n.includes("~/.codex")));
+  assert.ok(r1.next.some((n) => n.includes("scripts/start")) && r1.next.some((n) => n.includes("接入 AI")));
+  assert.ok(r1.next.every((n) => !n.includes("codex login") && !n.includes("~/.codex")));
   // 第二次:全部 exists / kept,文件不变
   const before = fs.readFileSync(path.join(repo, ".local", "config.json"), "utf8");
   const r2 = runInit({ repoRoot: repo });
@@ -166,6 +167,13 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   const f = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: badPy, python: "/fake/python", writeReport: false });
   const fb = Object.fromEntries(f.checks.map((c) => [c.id, c]));
   assert.equal(fb.python.status, "fail"); assert.match(fb.python.fix ?? "", /pip install -r/); assert.equal(fb.calc.status, "skip"); assert.equal(f.exit_code, 3);
+  // 安装清单与体检都必须覆盖已注册的 mootdx 源，不能“初始化正常、五个端点全缺包”。
+  const requirements = fs.readFileSync(path.join(REPO, ".agents/skills/data-access/scripts/requirements.txt"), "utf8");
+  assert.match(requirements, /^mootdx==0\.11\.7$/m);
+  const noMootdx: Exec = (cmd, args) => args[0] === "-c" && String(args[1]).includes("mootdx")
+    ? { status: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'mootdx'" } : good(cmd, args);
+  const missingTdx = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: noMootdx, python: "/fake/python", writeReport: false });
+  assert.equal(missingTdx.checks.find(c => c.id === "python")?.status, "fail");
   // 受控 MCP 与 skills 配置隔离使用标准库 tomllib；3.10 即使取数依赖都能导入，也不能标成可用。
   const oldPy: Exec = (cmd, args) => args[0] === "-c" ? { status: 0, stdout: "3.10.14\n", stderr: "" } : good(cmd, args);
   const old = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: oldPy, python: "/fake/python", writeReport: false });

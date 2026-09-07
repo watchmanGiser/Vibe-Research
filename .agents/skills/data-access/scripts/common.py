@@ -300,7 +300,9 @@ def finish(result: dict, out_dir: Optional[str] = None) -> None:
     sys.exit({"ok": 0, "partial": 2}.get(status, 3))
 
 
-_HOME_USER_RE = re.compile(r"(/Users/|/home/|C:\\\\Users\\\\)([^/\\\\\"'\s:]+)")
+_HOME_USER_RE = re.compile(r"(/Users/|/home/)([^/\\\"'\s:]+)")
+# 真实 Windows 路径是一根反斜杠；repr/JSON 诊断中也可能出现双反斜杠。
+_WINDOWS_HOME_USER_RE = re.compile(r"([A-Za-z]:\\{1,2}(?i:Users)\\{1,2})([^/\\\"'\r\n:]+)")
 _PRIVATE_IP_RE = re.compile(r"\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|127(?:\.\d{1,3}){3})\b")
 _USERINFO_RE = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]*@", re.I)
 _KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
@@ -324,6 +326,7 @@ def redact_text(text: str) -> str:
     out = _KEY_RE.sub("[REDACTED_KEY]", out)
     out = _EMAIL_RE.sub("[REDACTED_EMAIL]", out)
     out = _HOME_USER_RE.sub(r"\1[USER]", out)
+    out = _WINDOWS_HOME_USER_RE.sub(r"\1[USER]", out)
     return _PRIVATE_IP_RE.sub("[PRIVATE_IP]", out)
 
 

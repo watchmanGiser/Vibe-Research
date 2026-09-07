@@ -186,6 +186,10 @@ class DataNotAvailable(RuntimeError):
     """该日 / 该标的确实没有数据(非交易日、文件未发布)——可安全回退;与配置 / 网络错误区分。"""
 
 
+class ResourceUnavailable(RuntimeError):
+    """资源未取得，不能据此推断业务无数据。日期/形式回退仅由对应源函数决定。"""
+
+
 class _RateLimiter:
     def __init__(self, max_per_sec: float):
         self._interval = 1.0 / float(max_per_sec)
@@ -216,7 +220,9 @@ def sec_contact() -> str:
     return os.environ.get("VRA_SEC_CONTACT", "").strip()
 
 
-def _is_object_missing(resp) -> bool:
+def _may_be_unavailable_object(resp) -> bool:
+    # S3 缺少 ListBucket 权限时，不存在的对象也可能返回 AccessDenied；
+    # 反过来 AccessDenied 不能证明对象不存在。
     if resp.status_code == 404:
         return True
     if resp.status_code != 403:
@@ -252,11 +258,11 @@ def official_get(url: str, params: Optional[dict] = None, headers: Optional[dict
         resp = e.response
         code = resp.status_code
         low = (resp.text or "")[:4000].lower()
-        if _is_object_missing(resp):
-            raise DataNotAvailable(f"HTTP {code} {url[:80]} — 资源不存在(该日无数据 / 尚未发布)") from e
         if code == 403 and "undeclared" in low:
             raise RuntimeError(f"SEC 拒绝:User-Agent 未被识别为已声明(VRA_SEC_CONTACT={sec_contact()!r})") from e
-        hint = {403: "被拒绝:限流 / 封禁 / 权限(已排除资源不存在)", 404: "端点不存在:接口可能已变更", 429: "请求过快"}.get(code, "")
+        if _may_be_unavailable_object(resp):
+            raise ResourceUnavailable(f"HTTP {code} {url[:80]} — 资源未取得，无法确认数据是否存在；可能未发布、路径变更或访问受限") from e
+        hint = {403: "被拒绝:限流 / 封禁 / 权限，原因未核实", 429: "请求过快"}.get(code, "")
         raise RuntimeError(f"HTTP {code} {url[:80]} — {hint}") from e
     except requests.RequestException as e:
         raise RuntimeError(f"请求失败 {url[:80]} — {type(e).__name__}: {e}") from e

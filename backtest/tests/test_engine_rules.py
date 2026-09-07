@@ -48,9 +48,9 @@ class Signals:
     def generate(self, data_map): return self.sig
 
 
-def run_engine(engine, frames, signals, cash=1_000_000.0):
+def run_engine(engine, frames, signals, cash=1_000_000.0, adjustment="rebalance"):
     cfg = {"codes": list(frames), "initial_cash": cash, "start_date": "2024-01-02",
-           "end_date": "2025-12-31", "interval": "1D", "position_adjustment": "rebalance"}
+           "end_date": "2025-12-31", "interval": "1D", "position_adjustment": adjustment}
     eng = engine({**cfg})
     with contextlib.redirect_stdout(io.StringIO()):   # 引擎会往 stdout 打 metrics JSON
         m = eng.run_backtest(config=cfg, loader=FrameLoader(frames), signal_engine=Signals(signals),
@@ -59,6 +59,53 @@ def run_engine(engine, frames, signals, cash=1_000_000.0):
 
 
 # ── T+1 ──
+
+@pytest.mark.parametrize("adjustment", ["hold", "rebalance"])
+@pytest.mark.parametrize("weight", [0.0, 0.5])
+def test_execution_fee_metrics_match_fills_and_cash(adjustment, weight):
+    df = frame([100.0] * 8)
+    eng, metrics = run_engine(
+        ChinaAEngine, {"600519.SH": df},
+        {"600519.SH": pd.Series(weight, index=df.index)},
+        adjustment=adjustment,
+    )
+    fees = sum(fill.fee for fill in eng.fill_records)
+    assert metrics["execution_fees"] == pytest.approx(fees)
+    assert metrics["fill_count"] == len(eng.fill_records)
+    if weight:
+        assert fees > 0 and metrics["fill_count"] >= 2
+        # Constant prices: realized price P&L minus actual execution fees
+        # must reconcile to terminal cash, including forced liquidation.
+        pnl = sum(trade.pnl for trade in eng.trades)
+        assert eng.capital == pytest.approx(1_000_000 + pnl - fees)
+    else:
+        assert fees == 0 and metrics["fill_count"] == 0
+
+@pytest.mark.parametrize("adjustment", ["hold", "rebalance"])
+@pytest.mark.parametrize("operation", ["open", "close"])
+def test_execution_errors_abort_instead_of_emitting_success(adjustment, operation):
+    class BrokenEngine(GlobalEquityEngine):
+        def _plan_open_order(self, *args, **kwargs):
+            if operation == "open":
+                raise ValueError("synthetic execution failure")
+            return super()._plan_open_order(*args, **kwargs)
+
+        def _close_position(self, *args, **kwargs):
+            if operation == "close":
+                raise ValueError("synthetic execution failure")
+            return super()._close_position(*args, **kwargs)
+
+    df = frame([100.] * 6)
+    sig = pd.Series([1., 1., 0., 0., 0., 0.], index=df.index)
+    with pytest.raises(ValueError, match="synthetic execution failure"):
+        run_engine(BrokenEngine, {"AAPL": df}, {"AAPL": sig}, adjustment=adjustment)
+
+def test_default_benchmark_holds_initial_equal_shares_without_daily_rebalancing():
+    a, b = frame([100., 200., 100.]), frame([100., 100., 100.])
+    _, metrics = run_engine(GlobalEquityEngine, {"A": a, "B": b},
+                            {"A": pd.Series(0., index=a.index), "B": pd.Series(0., index=b.index)})
+    assert metrics["benchmark_return"] == pytest.approx(0), "daily rebalancing incorrectly yields 12.5%"
+
 
 def test_a_share_cannot_sell_on_the_day_it_bought():
     """信号第 2 天叫买、第 3 天叫卖。买入在第 3 天开盘成交（信号后移一根），
@@ -92,6 +139,38 @@ def test_us_allows_fractional_shares():
     assert GlobalEquityEngine({}).round_size(1234.56, 10.0) > 1234
 
 
+def test_us_fractional_sizing_never_exceeds_target():
+    assert GlobalEquityEngine({}).round_size(123.456, 10.0) == 123.45
+
+
+@pytest.mark.parametrize("market,code,price", [
+    ("us", "AAPL", 123.456), ("hk", "00700.HK", 100.0),
+    ("cn", "600519.SH", 100.0),
+])
+def test_full_target_reserves_real_fees_without_negative_cash(market, code, price):
+    df = frame([price] * 8)
+    sig = pd.Series([1.0] * 8, index=df.index)
+    engine = (lambda cfg: ChinaAEngine({**cfg, "slippage": 0})) if market == "cn" else (
+        lambda cfg: GlobalEquityEngine({**cfg, "slippage_hk": 0, "slippage_us": 0}, market))
+    eng, _ = run_engine(engine, {code: df}, {code: sig}, cash=100_000)
+    assert eng.fill_records
+    assert all(s.capital >= -1e-8 for s in eng.equity_snapshots)
+    assert eng.capital <= 100_000, "恒定行情不能因忽略费用而产生收益"
+
+
+def test_fee_budget_is_shared_by_basket_not_symbol_order():
+    df = frame([100.0] * 6)
+    sig = pd.Series([0.5] * 6, index=df.index)
+    filled = []
+    for codes in [("A", "B"), ("B", "A")]:
+        eng, _ = run_engine(lambda cfg: GlobalEquityEngine({**cfg, "slippage_hk": 0}, "hk"),
+                            {c: df for c in codes}, {c: sig for c in codes}, cash=100_000)
+        first = {f.symbol: f.signed_quantity for f in eng.fill_records if f.bar_idx == 1}
+        assert first["A"] == first["B"]
+        filled.append(first)
+    assert filled[0] == filled[1]
+
+
 # ── 费用：印花税只在卖出 ──
 
 def test_stamp_tax_only_on_sell():
@@ -113,10 +192,24 @@ def test_commission_floor_of_five_yuan():
 
 @pytest.mark.parametrize("code,limit", [
     ("600519.SH", 0.10), ("000001.SZ", 0.10), ("300308.SZ", 0.20),
-    ("688981.SH", 0.20), ("830799.BJ", 0.30),
+    ("688981.SH", 0.20), ("689009.SH", 0.20), ("830799.BJ", 0.30),
+    ("301001.SZ", 0.20), ("302001.SZ", 0.20), ("430047.BJ", 0.30), ("920001.BJ", 0.30),
 ])
 def test_price_limit_by_board(code, limit):
     assert _price_limit(code) == limit
+
+
+@pytest.mark.parametrize("code,day,opening,allowed", [
+    ("300308.SZ", "2020-08-21", 115, False),
+    ("300308.SZ", "2020-08-24", 115, True),
+    ("301001.SZ", "2025-01-02", 115, True),
+    ("301001.SZ", "2025-01-02", 120, False),
+    ("430047.BJ", "2025-01-02", 125, True),
+    ("920001.BJ", "2025-01-02", 130, False),
+])
+def test_actual_fill_uses_board_and_historical_date(code, day, opening, allowed):
+    bar = pd.Series({"open": opening, "close": opening, "pre_close": 100}, name=pd.Timestamp(day))
+    assert ChinaAEngine({"slippage": 0}).can_execute(code, 1, bar) is allowed
 
 
 def test_limit_up_bar_blocks_the_buy():

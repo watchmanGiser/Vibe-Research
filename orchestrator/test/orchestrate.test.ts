@@ -14,6 +14,9 @@ import { saveLedger, type FetchExecutor } from "../src/fetchrun.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { hooksIneffectiveReason, deriveRunStatus, exitCodeFor, prepareRunDir, runResearch } from "../src/orchestrate.ts";
 import { CodexRunner, EventsLog, codexOptionsFor, type AgentRunner, type TurnOutcome } from "../src/runner.ts";
+import { noopLifecycle } from "../src/engine.ts";
+import { codexCapabilities } from "../src/engines/codex_lifecycle.ts";
+import { directCapabilities } from "../src/engines/direct_lifecycle.ts";
 import { currentPlugin } from "../src/plugin.ts";
 import { validateManifest } from "../src/schemas.ts";
 
@@ -22,10 +25,13 @@ import "../src/finance/register.ts";   // 测试文件也是入口:插件要先�
 import { appendHookLog } from "../src/hooks.ts";
 import { loadRegistry } from "../src/registry.ts";
 import { mergeEvidence } from "../src/merge.ts";
+import { LocalAgentError } from "../src/local_agent_runtime.ts";
 const TS = "2026-08-21T10:00:00+08:00";
 const ev = (id: string, field: string, value: unknown, extra: Record<string, unknown> = {}) => ({ id, symbol: "300308", market: "SZ", field, value, unit: "元", currency: "CNY",
   period: "2026-08-21", as_of: "2026-08-21", source: "tencent", endpoint: "qt", fetched_at: TS, adjustment: "none", raw_ref: null, ...extra });
 const CAL = { session_phase: "non_trading_day", reference_quote_day: "2026-08-21", last_trading_day: "2026-08-21" };
+const PE_PERIOD = "2026-08-20..2026-08-21";
+const PE_SERIES = { raw_ref: "raw/fake_fetch_pe_history.csv", column: "peTTM", where: { tradestatus: "1" }, date_column: "date" };
 
 const REAL_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 function tmpRepo(): string {
@@ -45,7 +51,7 @@ const FIELDS: Record<string, { field: string; value: number; unit?: string; peri
   fetch_quote: [{ field: "price", value: 943 }, { field: "total_market_cap", value: 1.0e12 }, { field: "pe_ttm", value: 50, unit: "倍" }],
   fetch_financials: [{ field: "revenue_cum", value: 5e9, period: "2026Q2" }, { field: "net_profit_parent_cum", value: 1.1e9, period: "2026Q2" }, { field: "net_profit_deducted_cum", value: 1e9, period: "2026Q2" }],
   fetch_estimates: [{ field: "eps_consensus_mean", value: 10, period: "FY2026" }, { field: "eps_consensus_mean", value: 20, period: "FY2028" }, { field: "eps_consensus_min", value: 5, period: "FY2028" }, { field: "eps_consensus_max", value: 30, period: "FY2028" }],
-  fetch_pe_history: [{ field: "pe_ttm_traded_history_points", value: 1200, unit: "个" }],
+  fetch_pe_history: [{ field: "pe_ttm_traded_history_points", value: 2, unit: "个", period: PE_PERIOD }],
 };
 const evId = (s: string, field = s, period = "") => `ev-${crypto.createHash("sha256").update(`${s}|${field}|${period}`).digest("hex").slice(0, 6)}`;
 
@@ -59,8 +65,9 @@ function fakeFetch(failed: string[] = []): FetchExecutor {
       const extra = s === "fetch_quote" ? { is_stale: false, quote_date: "2026-08-21" } : s === "fetch_trade_calendar" ? CAL : s === "fetch_estimates" ? { current_fy: "FY2026", years: ["FY2026", "FY2027", "FY2028"] } : {};
       const spec = FIELDS[s] ?? [{ field: s, value: 1 }];
       // 每个脚本一份假 raw 响应:证据 raw_ref 指向它,账本 raw_files 登记其 sha(与真实取数一致,满足"每条证据必有 raw_ref"规则)
-      const rawName = `fake_${s}.json`;
-      fs.writeFileSync(path.join(cfg.runDir, "raw", rawName), JSON.stringify({ fake: s }));
+      const rawName = s === "fetch_pe_history" ? "fake_fetch_pe_history.csv" : `fake_${s}.json`;
+      fs.writeFileSync(path.join(cfg.runDir, "raw", rawName), s === "fetch_pe_history"
+        ? "date,peTTM,tradestatus\n2026-08-20,40,1\n2026-08-21,60,1\n" : JSON.stringify({ fake: s }));
       const evidence = isFail ? [] : spec.map((x) => ev(evId(s, x.field, x.period ?? ""), x.field, x.value,
         { raw_ref: `raw/${rawName}`, ...(x.unit ? { unit: x.unit } : {}), ...(x.period ? { period: x.period } : {}), ...(s === "fetch_trade_calendar" ? { market: "CN", symbol: "MARKET", currency: "n/a", adjustment: "not_applicable" } : {}) }));
       const env = { script: s, symbol: cfg.symbol, market: cfg.market, status: isFail ? "failed" : "ok", fetched_at: TS, primary_source: isFail ? null : "tencent",
@@ -78,7 +85,7 @@ type Behaviour = (stage: Stage, attempt: number, cfg: RunConfig, prompt: string)
 
 /** 假 agent:按回调在运行目录写产物 */
 class FakeRunner implements AgentRunner {
-  threadId = "fake-thread";
+  threadId: string | null = "fake-thread";
   calls: { stage: Stage; attempt: number; prompt: string }[] = [];
   logs: { stage: string; type: string }[] = [];
   private readonly behave: Behaviour;
@@ -104,12 +111,13 @@ class FakeRunner implements AgentRunner {
 const E = (id: string) => ({ ref_type: "evidence" as const, ref_id: id });
 const C = (id: string) => ({ ref_type: "calculation" as const, ref_id: id });
 const CALC = (fn: string, id: string, refs: { ref_type: "evidence" | "calculation"; ref_id: string }[], inputs: Record<string, unknown> = { a: 1 }, out: { value: number | null; unit: string } = { value: 1.5, unit: "倍" }) => ({ calculation_id: id, function: fn, calc_version: "0.2.0", inputs,
-  inputs_resolved: {}, inputs_refs: refs, output: { status: out.value === null ? "not_meaningful" : "ok", value: out.value, unit: out.unit, reason: "", details: {} } });
+  // 复算仍由此状态机测试的替身负责；序列槽位的生产校验必须看到正确的输入元数据。
+  inputs_resolved: fn === "percentile_rank" ? { history: { ...PE_SERIES, period: PE_PERIOD, rows_used: 2 } } : {}, inputs_refs: refs, output: { status: out.value === null ? "not_meaningful" : "ok", value: out.value, unit: out.unit, reason: "", details: {} } });
 const cid = (n: number) => `calc-${n.toString(16).padStart(16, "0")}`;
 const QUOTE = { price: evId("fetch_quote", "price"), cap: evId("fetch_quote", "total_market_cap"), pe: evId("fetch_quote", "pe_ttm") };
 const FIN = { rev: evId("fetch_financials", "revenue_cum", "2026Q2"), par: evId("fetch_financials", "net_profit_parent_cum", "2026Q2"), ded: evId("fetch_financials", "net_profit_deducted_cum", "2026Q2") };
 const EST = { m26: evId("fetch_estimates", "eps_consensus_mean", "FY2026"), m28: evId("fetch_estimates", "eps_consensus_mean", "FY2028"), min: evId("fetch_estimates", "eps_consensus_min", "FY2028"), max: evId("fetch_estimates", "eps_consensus_max", "FY2028") };
-const PEH = evId("fetch_pe_history", "pe_ttm_traded_history_points");
+const PEH = evId("fetch_pe_history", "pe_ttm_traded_history_points", PE_PERIOD);
 /** 计算 id 约定:1-3 quarterize(营收 / 归母 / 扣非),4 latest_quarter,5 ttm_sum,6 ttm_yoy,7 qoq;10 forward_cagr,11 dispersion;20-26 估值 */
 type Ref = { ref_type: "evidence" | "calculation"; ref_id: string };
 type CalcSpec = [string, number, Ref[], Record<string, unknown>, { value: number | null; unit: string }];
@@ -127,7 +135,7 @@ const VAL_CALCS: CalcSpec[] = [
   ["pe_deducted_annualized", 20, [E(QUOTE.cap), C(cid(4))], { total_market_cap: 1.0e12, cap_unit: "元", latest_quarter_deducted_profit: OUT.lq.value, profit_unit: "元" }, OUT.pe],
   ["forward_pe", 21, [E(QUOTE.price), E(EST.m26)], { price: 943, eps_forecast: 10 }, { value: 94.3, unit: "倍" }],
   ["pe_ttm_from_parts", 22, [E(QUOTE.cap), C(cid(5))], { total_market_cap: 1.0e12, cap_unit: "元", ttm_profit: OUT.ttm.value, profit_unit: "元" }, OUT.pe_ttm],
-  ["percentile_rank", 23, [E(PEH), E(QUOTE.pe)], { current: 50, history_csv: "x" }, { value: 64.9, unit: "%" }],
+  ["percentile_rank", 23, [E(PEH), E(QUOTE.pe)], { current: 50, history: { history_csv: PE_SERIES } }, { value: 64.9, unit: "%" }],
   ["peg", 24, [C(cid(20)), C(cid(10))], { pe: OUT.pe.value, cagr: OUT.cagr.value }, { value: 24.1, unit: "倍" }],
   ["pe_digestion_scenarios", 25, [C(cid(20)), C(cid(10))], { pe: OUT.pe.value, cagr: OUT.cagr.value }, { value: null, unit: "年" }],
   ["forward_vs_ttm_judgement", 26, [C(cid(10)), C(cid(6))], { forward_cagr_value: OUT.cagr.value, ttm_yoy_value: OUT.yoy.value }, { value: -158.6, unit: "百分点" }],
@@ -154,13 +162,211 @@ function goodAgent(stage: Stage, _attempt: number, cfg: RunConfig): void {
   if (stage === "risk") writeJson(path.join(R, "stages", "risk.json"), { stage, status: "complete", ...base, counter_evidence: [{ claim: "c", counter: "x", evidence_ids: [QUOTE.price] }],
     decision_points: [{ what_would_change: "a", next_data_point: "b" }, { what_would_change: "a", next_data_point: "b" }, { what_would_change: "a", next_data_point: "b" }], source_conflicts: [] });
   if (stage === "report") {
-    fs.writeFileSync(path.join(R, "report.md"), `# 测试(SZ:300308)研究报告 · 状态:complete\n## 结论摘要\n- ok\n## 事实\n- 现价 943 元(${QUOTE.price})\n## 推断\n## 估值\n- 扣非×4 PE 1.5 倍(${cid(20)})\n## 风险与反证\n## 裁决点\n## 数据缺口\n`);
-    writeJson(path.join(R, "stages", "report.json"), { stage, status: "complete", ...base, evidence_ids: [QUOTE.price], calculation_ids: [cid(20)] });
+    fs.writeFileSync(path.join(R, "report.md"), `# 测试(SZ:300308)研究报告 · 状态:complete\n\n> PE 分位口径：当前值来源 tencent；历史序列来源 tencent；跨来源或不同财务口径的分位仅供对照，不代表同源精确比较。[${cid(23)}]\n\n## 结论摘要\n- ok\n## 事实\n- 现价 943 元(${QUOTE.price})\n## 推断\n## 估值\n- 扣非×4 PE 1.5 倍(${cid(20)})\n## 风险与反证\n## 裁决点\n## 数据缺口\n`);
+    writeJson(path.join(R, "stages", "report.json"), { stage, status: "complete", ...base, evidence_ids: [QUOTE.price], calculation_ids: [cid(20), cid(23)] });
   }
 }
 
 const okVerify = () => ({ ok: true, errors: [], warnings: [] });
 const deps = (runner: AgentRunner, fetchRunner: FetchExecutor) => ({ runner, fetchRunner, verify: okVerify, sdkVersion: () => ({ version: "fake 0.0", binary: null }) });
+
+test("同步最终校验后仍先检查取消，再开始归档", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "cancel-finalization", hooksEnabled: false, endpointScope: "core" });
+  const ac = new AbortController();
+  const runner = new FakeRunner(goodAgent, cfg);
+  let closing = 0;
+  try {
+    await assert.rejects(runResearch(cfg, { ...deps(runner, fakeFetch()), signal: ac.signal,
+      beginFinalization: () => { closing += 1; ac.abort(new Error("用户取消研究")); },
+    }, ["profile"]), /用户取消研究/);
+    assert.equal(closing, 1);
+    assert.equal(runner.logs.some((e) => ["viewer.written", "knowledge.archived", "report.ready", "run.finished"].includes(e.type)), false);
+    const manifest = JSON.parse(fs.readFileSync(path.join(cfg.runDir, "manifest.json"), "utf8"));
+    assert.equal(manifest.cancelled, true);
+    const events = fs.readFileSync(path.join(cfg.runDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const finished = events.filter(e => e.type === "research.finished").at(-1);
+    assert.equal(finished?.status, "cancelled");
+    assert.equal(manifest.stages[0].status, "complete");
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("取消发生在取数后时不调用模型、不归档，保留取消终态", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "cancel-fetch", hooksEnabled: false, endpointScope: "core" });
+  const ac = new AbortController();
+  const runner = new FakeRunner(goodAgent, cfg);
+  const fetcher: FetchExecutor = (...args) => {
+    const result = fakeFetch()(...args);
+    ac.abort(new Error("用户取消研究"));
+    return result;
+  };
+  try {
+    await assert.rejects(runResearch(cfg, { ...deps(runner, fetcher), signal: ac.signal }), /用户取消研究/);
+    assert.equal(runner.calls.length, 0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(cfg.runDir, "manifest.json"), "utf8"));
+    assert.equal(manifest.status, "failed");
+    assert.equal(manifest.cancelled, true);
+    assert.ok(manifest.finished_at);
+    assert.equal(manifest.knowledge_archived ?? null, null);
+    assert.ok(fs.existsSync(path.join(cfg.runDir, "fetch", "_ledger.json")));
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("模型返回后收到取消不重试、不开始下一阶段；已完成阶段仍在", async () => {
+  const repo = tmpRepo();
+  const ac = new AbortController();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "cancel-turn", hooksEnabled: false, endpointScope: "core" });
+  const runner = new FakeRunner((stage, attempt, config) => {
+    goodAgent(stage, attempt, config);
+    if (stage === "financials") ac.abort(new Error("用户取消研究"));
+  }, cfg);
+  try {
+    await assert.rejects(runResearch(cfg, { ...deps(runner, fakeFetch()), signal: ac.signal }), /用户取消研究/);
+    assert.deepEqual(runner.calls.map((call) => call.stage), ["profile", "financials"]);
+    const m = JSON.parse(fs.readFileSync(path.join(cfg.runDir, "manifest.json"), "utf8"));
+    assert.equal(m.cancelled, true);
+    assert.equal(m.stages[0].stage, "profile"); assert.equal(m.stages[0].status, "complete");
+    assert.equal(fs.existsSync(path.join(cfg.runDir, "report.md")), false);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("Codex 阶段取消传入 SDK 且不误报超时", async () => {
+  const repo = tmpRepo();
+  const ac = new AbortController();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "cancel-sdk", hooksEnabled: false, endpointScope: "core" });
+  const fakeCodex = () => ({ startThread: () => ({ id: "t", runStreamed: async (_prompt: string, options: { signal: AbortSignal }) => {
+    ac.abort(new Error("用户取消研究"));
+    assert.equal(options.signal.aborted, true);
+    throw options.signal.reason;
+  } }) }) as never;
+  try {
+    const result = await new CodexRunner(cfg, path.join(cfg.runDir, "events.jsonl"), fakeCodex).runTurn("profile", 1, "x", undefined, ac.signal);
+    assert.equal(result.failed, "用户取消研究");
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("Codex 保留流里的额度原因，不被随后 worker 退出错误覆盖", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "quota-sdk", hooksEnabled: false, endpointScope: "core" });
+  const fakeCodex = () => ({ startThread: () => ({ id: "t", runStreamed: async () => ({
+    events: (async function* () {
+      try { yield { type: "error", message: "You've hit your usage limit for GPT-5.3-Codex-Spark" }; }
+      finally { throw new Error("Codex SDK worker exited 1: Reading prompt from stdin"); }
+    })(),
+  }) }) }) as never;
+  try {
+    const out = await new CodexRunner(cfg, path.join(cfg.runDir, "events.jsonl"), fakeCodex).runTurn("profile", 1, "x");
+    assert.match(out.failed ?? "", /usage limit/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+for (const [failure, code, attempts] of [
+  ["You've hit your usage limit", "quota", 1],
+  ["401 Unauthorized", "authentication", 1],
+  ["turn 超时(1000 ms)", "timeout", 2],
+  ["429 Too Many Requests", "rate_limit", 2],
+] as const) test(`研究 ${code} 停在故障阶段并保留之前产物`, async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: `stop-${code}`, hooksEnabled: false, endpointScope: "core", maxRetries: 1 });
+  class FailingRunner extends FakeRunner {
+    override async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
+      const out = await super.runTurn(stage, attempt, prompt);
+      return { ...out, failed: stage === "financials" ? failure : null };
+    }
+  }
+  const runner = new FailingRunner((stage, attempt, cfg) => {
+    if (stage === "profile") goodAgent(stage, attempt, cfg);
+  }, cfg);
+  try {
+    const result = await runResearch(cfg, deps(runner, fakeFetch()));
+    assert.equal(result.status, "failed");
+    assert.equal(result.manifest.failure_code, code);
+    assert.deepEqual(runner.calls.map(c => c.stage), ["profile", ...Array(attempts).fill("financials")]);
+    assert.deepEqual(result.manifest.stages.map(s => s.status), ["complete", "failed"]);
+    assert.ok(fs.existsSync(path.join(cfg.runDir, "stages/profile.json")));
+    assert.ok(result.manifest.evidence_count > 0);
+    assert.equal(result.manifest.knowledge_archived, null);
+    assert.deepEqual(validateManifest(result.manifest), []);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("超时与不可修复的取数契约同时出现，不继续后续阶段", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "mixed-failure", hooksEnabled: false, endpointScope: "core", maxRetries: 1 });
+  class TimeoutRunner extends FakeRunner {
+    override async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
+      return { ...await super.runTurn(stage, attempt, prompt), failed: "turn 超时(1000 ms)" };
+    }
+  }
+  const runner = new TimeoutRunner(goodAgent, cfg);
+  const fetcher: FetchExecutor = async (...args) => {
+    const ledger = await fakeFetch()(...args);
+    const file = path.join(cfg.runDir, "fetch/fetch_quote.json");
+    const envelope = JSON.parse(fs.readFileSync(file, "utf8"));
+    envelope.fetched_at = 123;
+    writeJson(file, envelope);
+    ledger.fetch_quote.sha256 = sha256File(file);
+    return ledger;
+  };
+  try {
+    const result = await runResearch(cfg, deps(runner, fetcher));
+    assert.equal(result.status, "failed");
+    assert.equal(result.manifest.failure_code, "timeout");
+    assert.deepEqual(runner.calls.map(c => c.stage), ["profile"]);
+    assert.ok(result.manifest.final_errors?.some(e => e.includes("不符契约")));
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("一次超时后成功恢复，继续后续阶段且不残留失败标签", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "recovered-timeout", hooksEnabled: false, endpointScope: "core", maxRetries: 1 });
+  class RecoveringRunner extends FakeRunner {
+    override async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
+      return { ...await super.runTurn(stage, attempt, prompt), failed: stage === "profile" && attempt === 1 ? "timeout" : null };
+    }
+  }
+  try {
+    const result = await runResearch(cfg, deps(new RecoveringRunner(goodAgent, cfg), fakeFetch()));
+    assert.equal(result.status, "complete");
+    assert.equal(result.manifest.failure_code, undefined);
+    assert.equal(result.manifest.stages[0].attempts, 2);
+    assert.equal(result.manifest.stages.length, 6);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+for (const isAgent of [true, false]) test(`异常只分类执行器，不误认来源错误 (${isAgent})`, async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: `exception-${isAgent}`, hooksEnabled: false, endpointScope: "core" });
+  class ThrowingRunner extends FakeRunner {
+    override async runTurn(): Promise<TurnOutcome> { throw new LocalAgentError("agent_not_authenticated", "登录失效"); }
+  }
+  const fetcher: FetchExecutor = () => { throw new Error("数据源 429 timeout"); };
+  try {
+    await assert.rejects(runResearch(cfg, deps(new ThrowingRunner(goodAgent, cfg), isAgent ? fakeFetch() : fetcher)));
+    const m = JSON.parse(fs.readFileSync(path.join(cfg.runDir, "manifest.json"), "utf8"));
+    assert.equal(m.failure_code, isAgent ? "authentication" : undefined);
+    assert.equal(m.final_errors.some((s: string) => s.startsWith("execution:authentication:")), isAgent);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("成稿执行失败但遗留正文校验通过，最终仍失败且不归入知识库", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", repoRoot: repo, runId: "report-worker-failed", hooksEnabled: false, endpointScope: "core", maxRetries: 0 });
+  class ReportFailure extends FakeRunner {
+    override async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
+      const out = await super.runTurn(stage, attempt, prompt);
+      return { ...out, failed: stage === "report" ? "worker exited unexpectedly" : null };
+    }
+  }
+  try {
+    const result = await runResearch(cfg, deps(new ReportFailure(goodAgent, cfg), fakeFetch()));
+    assert.equal(result.manifest.stages.at(-1)?.validator_ok, true);
+    assert.equal(result.manifest.stages.at(-1)?.status, "failed");
+    assert.equal(result.status, "failed");
+    assert.equal(result.manifest.knowledge_archived, null);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
 
 test("happy path:六阶段一次通过 → complete,exit 0,manifest 过 schema", async () => {
   const repo = tmpRepo();
@@ -183,6 +389,60 @@ test("happy path:六阶段一次通过 → complete,exit 0,manifest 过 schema",
   assert.ok(types.includes("research.started") && types.includes("report.ready") && types.includes("research.finished"));
   assert.equal(types.filter((t) => t === "stage.completed").length, 6);
   assert.ok(!types.includes("gate.failed"));
+});
+
+test("Direct manifest 必须记录解析后的真实模型，并把未使用的 Codex 路径置空", async () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "direct-runtime", python: "false", engine: "direct" });
+  const runner = new FakeRunner(goodAgent, cfg);
+  runner.threadId = null;
+  const r = await runResearch(cfg, {
+    runner,
+    lifecycle: noopLifecycle(directCapabilities("server_schema")),
+    fetchRunner: fakeFetch(),
+    verify: okVerify,
+    sdkVersion: () => ({
+      kind: "direct" as const,
+      version: "direct-api/mimo/mimo-v2.5",
+      binary: null,
+      model: "mimo-v2.5",
+      codexPath: null,
+      codexHome: null,
+    }),
+  });
+  assert.equal(r.manifest.model, "mimo-v2.5");
+  assert.equal(r.manifest.model_note, "provider 默认模型，已由 Direct 运行时解析");
+  assert.equal(r.manifest.engine.codex_path, null);
+  assert.equal(r.manifest.engine.codex_home, null);
+  assert.equal(r.manifest.codex_version, "direct-api/mimo/mimo-v2.5");
+  assert.equal(r.manifest.hooks.enabled, false);
+  assert.equal(r.manifest.hooks.installed, false);
+  assert.equal(r.manifest.engine.capabilities?.hooks, false);
+  assert.deepEqual(validateManifest(r.manifest), []);
+});
+
+test("Codex manifest 必须记录 provider 默认模型，而不是退回未知模型口径", async () => {
+  const repo = tmpRepo();
+  const base = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "codex-runtime", python: "false" });
+  const cfg = { ...base, providerProfile: { ...base.providerProfile!, default_model: "codex-test-default" } };
+  const runner = new FakeRunner(goodAgent, cfg);
+  const r = await runResearch(cfg, {
+    runner,
+    lifecycle: noopLifecycle(codexCapabilities(cfg, "server_schema")),
+    fetchRunner: fakeFetch(),
+    verify: okVerify,
+    sdkVersion: () => ({
+      kind: "codex" as const,
+      version: "codex-test-version",
+      binary: "/test/codex",
+      model: "codex-test-default",
+      codexPath: "/test/codex",
+      codexHome: "/test/codex-home",
+    }),
+  });
+  assert.equal(r.manifest.model, "codex-test-default");
+  assert.equal(r.manifest.model_note, "provider 默认模型，已由 Codex 运行时解析");
+  assert.deepEqual(validateManifest(r.manifest), []);
 });
 
 test("必需取数失败 → 阶段 incomplete → 运行 incomplete(exit 2);三个关键脚本全失败 → failed", async () => {
@@ -266,9 +526,9 @@ test("合规 gate 命中 → 重写 → 复验通过 → complete;报告首行�
   assert.ok(runner.logs.some((l) => l.type === "report.status_normalized"));
 });
 
-test("gate 重写 turn 失败 → report 阶段 failed → 运行 failed(即使旧文件能过校验)", async () => {
+for (const failure of ["stream error: 模拟", "timeout", "usage limit"]) test(`gate 重写失败保留原因，即使正文已修好 (${failure})`, async () => {
   const repo = tmpRepo();
-  const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "t4b", python: "false", maxRetries: 0, gateRetries: 1 });
+  const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "t4b", python: "false", maxRetries: 0, gateRetries: 3 });
   const tempted: Behaviour = (stage, attempt, c) => {
     if (attempt < 100) goodAgent(stage, attempt, c);
     const rp = path.join(c.runDir, "report.md");
@@ -278,7 +538,7 @@ test("gate 重写 turn 失败 → report 阶段 failed → 运行 failed(即使�
   class FailingRewrite extends FakeRunner {
     override async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
       const o = await super.runTurn(stage, attempt, prompt);
-      return attempt >= 100 ? { ...o, failed: "stream error: 模拟" } : o;
+      return attempt >= 100 ? { ...o, failed: failure } : o;
     }
   }
   const r = await runResearch(cfg, deps(new FailingRewrite(tempted, cfg), fakeFetch()));
@@ -286,6 +546,7 @@ test("gate 重写 turn 失败 → report 阶段 failed → 运行 failed(即使�
   assert.equal(r.manifest.stages.find((s) => s.stage === "report")?.status, "failed");
   assert.equal(r.status, "failed");
   assert.equal(r.exitCode, 3);
+  assert.equal(r.manifest.failure_code, failure === "timeout" ? "timeout" : failure === "usage limit" ? "quota" : undefined);
 });
 
 test("agent 篡改取数文件(连同磁盘账本) → 内存账本识破 → 阶段 failed → 运行 failed;agent 自写 raw 文件同样被识破", async () => {

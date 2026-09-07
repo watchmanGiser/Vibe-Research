@@ -9,35 +9,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { Codex, type CodexOptions, type Thread, type ThreadEvent, type ThreadItem } from "@openai/codex-sdk";
+import type { Codex, CodexOptions, Thread, ThreadOptions, ThreadEvent, ThreadItem } from "@openai/codex-sdk";
+import { runCodexSdkTurn } from "./codex_sdk_process.ts";
 
+import { EventsLog, type AgentRunner, type TurnOutcome } from "./agent_runner.ts";
 import { CODEX_SHELL_ENV_POLICY, codexEnvFor, secretsFor, type RunConfig, type Stage } from "./config.ts";
 import { nowIso } from "./fsutil.ts";
 import { codexProviderConfig, structuredOutputMode, withOutputSchema } from "./providers.ts";
 
-export interface CommandRecord { command: string; exit_code: number | null; status: string }
-
-export interface TurnOutcome {
-  finalResponse: string;
-  usage: Record<string, number> | null;
-  commands: CommandRecord[];
-  fileChanges: string[];
-  itemCount: number;
-  durationMs: number;
-  failed: string | null;
-  threadId: string | null;
-}
-
-/** 可注入的运行器接口(测试用假运行器实现同一接口) */
-export interface AgentRunner {
-  runTurn(stage: Stage, attempt: number, prompt: string, outputSchema?: unknown): Promise<TurnOutcome>;
-  readonly threadId: string | null;
-  log(stage: Stage | "orchestrator", type: string, payload?: Record<string, unknown>): void;
-  /** events.jsonl 全部已写内容的 sha256(用于认证审计日志未被 agent 改动);null = 不校验 */
-  eventsDigest(): string | null;
-}
-
-const GENERIC_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
+export { EventsLog, redactEnvironment } from "./agent_runner.ts";
+export type { AgentRunner, CommandRecord, TurnOutcome } from "./agent_runner.ts";
 
 function tomlValue(value: unknown): string {
   if (typeof value === "string") return JSON.stringify(value);
@@ -71,11 +52,8 @@ export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.Proce
   // 不存在时 Node 会把它报成近似“二进制 ENOENT”，因此退到已存在的数据根；
   // 对话入口会先建立会话目录，仍使用精确 cwd。
   const configCwd = fs.existsSync(cfg.runDir) ? cfg.runDir : fs.existsSync(cfg.dataRoot) ? cfg.dataRoot : cfg.repoRoot;
-  // 🔴 无论调用方传来什么 env，发现命令必须跑在**产品自己的 CODEX_HOME** 下（#44）：
-  //    否则 codex 回落到用户全局 ~/.codex，枚举出的 server 在线程真正使用的 CODEX_HOME 里
-  //    并不存在，投影成 `{ enabled = false }` 后被 codex ≥0.149 判 `invalid transport`。
-  //    codex ≥0.149 对不存在的 CODEX_HOME 直接报 `failed to resolve CODEX_HOME`；产品目录
-  //    尚未初始化时（首次运行、单测的临时数据根）先建出来 —— 与 hooks.ts / skills_isolation.ts 同一做法。
+  // #44：调用方传入裸环境或其他 CODEX_HOME 时也不得回落到用户配置。
+  // 官方引擎要求 CODEX_HOME 已存在；首次预检时可能还未初始化。
   fs.mkdirSync(cfg.codexHome, { recursive: true });
   const discoveryEnv = { ...engineEnv, CODEX_HOME: cfg.codexHome };
   const effective = spawnSync(codexBin, [
@@ -134,40 +112,6 @@ export function mcpIsolationOverride(cfg: RunConfig, ownServer?: Record<string, 
  * ⚠️ 这是**纵深防御不是安全边界**:自由文本里的敏感信息不可能靠正则枚举干净
  *    (与 core/retrieval 那次同一口径:第三方凭据只能模式匹配,所以文档不承诺"绝不回显")。
  */
-const HOME_USER_RE = /(\/Users\/|\/home\/|C:\\\\Users\\\\)([^/\\\\"'\s:]+)/g;
-const PRIVATE_HOST_RE = /\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|127(?:\.\d{1,3}){3})\b/g;
-const USERINFO_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^/@\s:]+:[^/@\s]*@/gi;
-const INTERNAL_HOST_RE = /\b([a-z][a-z0-9+.-]*:\/\/)(localhost|[a-z0-9-]+\.(?:local|internal|lan|corp|intranet))\b/gi;
-
-export function redactEnvironment(text: string): string {
-  return text
-    .replace(USERINFO_RE, "$1[REDACTED_USERINFO]@")
-    .replace(HOME_USER_RE, "$1[USER]")
-    .replace(PRIVATE_HOST_RE, "[PRIVATE_IP]")
-    .replace(INTERNAL_HOST_RE, "$1[INTERNAL_HOST]");
-}
-
-export class EventsLog {
-  private readonly hash = crypto.createHash("sha256");
-  private readonly path: string;
-  private readonly secrets: string[];
-  constructor(p: string, secrets: string[] = []) { this.path = p; this.secrets = secrets.filter((x) => x.length >= 8); }
-  redact(text: string): string {
-    let out = text;
-    for (const sec of this.secrets) out = out.split(sec).join("[REDACTED]");
-    out = out.replace(GENERIC_KEY_RE, "[REDACTED_KEY]");
-    return redactEnvironment(out);
-  }
-  append(obj: unknown): void {
-    const line = this.redact(JSON.stringify(obj)) + "\n";
-    this.hash.update(line);
-    fs.mkdirSync(path.dirname(this.path), { recursive: true });
-    const fd = fs.openSync(this.path, "a");
-    try { fs.writeSync(fd, line); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  }
-  digest(): string { return this.hash.copy().digest("hex"); }
-}
-
 /**
  * Codex SDK 选项(v2.1 §5 ①②):引擎路径 codexPathOverride(空 = SDK 内置);env 只含显式 CODEX_HOME(+ api_key 模式的 CODEX_API_KEY);
  * config 注入工具执行环境策略——agent 的 shell 命令不继承任何密钥类变量(主防线;Codex 默认 ignore_default_excludes=true 即会继承)。
@@ -212,7 +156,8 @@ export function codexOptionsFor(cfg: RunConfig, env: NodeJS.ProcessEnv = process
 
 export class CodexRunner implements AgentRunner {
   private thread: Thread | null = null;
-  private readonly codex: Codex;
+  private readonly codex: Codex | null;
+  private workerThreadId: string | null = null;
   private readonly cfg: RunConfig;
   private readonly events: EventsLog;
   private seq = 0;
@@ -222,24 +167,29 @@ export class CodexRunner implements AgentRunner {
   /** 事件旁路观察者(进度渲染用)。**只观察不参与** —— 它抛错不得影响运行,见 log()。 */
   private readonly observer: ((ev: Record<string, unknown>) => void) | null;
 
-  constructor(cfg: RunConfig, eventsPath: string, codexFactory: (opts: CodexOptions) => Codex = (o) => new Codex(o),
+  constructor(cfg: RunConfig, eventsPath: string, codexFactory?: (opts: CodexOptions) => Codex,
               observer?: (ev: Record<string, unknown>) => void) {
     this.cfg = cfg;
     this.events = new EventsLog(eventsPath, secretsFor(cfg));   // 已知密钥值落盘前脱敏(纵深)
     this.codexOptions = codexOptionsFor(cfg);
-    this.codex = codexFactory(this.codexOptions);
+    this.codex = codexFactory ? codexFactory(this.codexOptions) : null;
     this.observer = observer ?? null;
   }
 
   eventsDigest(): string | null { return this.events.digest(); }
 
   get threadId(): string | null {
-    return this.thread?.id ?? null;
+    return this.thread?.id ?? this.workerThreadId;
   }
 
   private ensureThread(): Thread {
     if (this.thread) return this.thread;
-    this.thread = this.codex.startThread({
+    this.thread = this.codex!.startThread(this.threadOptions());
+    return this.thread;
+  }
+
+  private threadOptions(): ThreadOptions {
+    return {
       workingDirectory: this.cfg.runDir,
       // Windows 原生模式不把可写目录交给模型；所有落盘只经受控 MCP 工具完成。
       sandboxMode: this.cfg.executionMode === "controlled_mcp" ? "read-only" : "workspace-write",
@@ -257,8 +207,7 @@ export class CodexRunner implements AgentRunner {
       webSearchMode: "disabled",            // 不联网搜索,数据只来自登记脚本
       model: this.cfg.model ?? this.cfg.providerProfile?.default_model ?? undefined,  // 未指定模型时用 provider 模板默认(openai 模板为 null → 引擎默认)
       modelReasoningEffort: this.cfg.reasoning as never,
-    });
-    return this.thread;
+    };
   }
 
   log(stage: Stage | "orchestrator", type: string, payload: Record<string, unknown> = {}): void {
@@ -269,31 +218,44 @@ export class CodexRunner implements AgentRunner {
     if (this.observer) { try { this.observer(ev); } catch { /* 显示层永不影响运行 */ } }
   }
 
-  async runTurn(stage: Stage, attempt: number, prompt: string, outputSchema?: unknown): Promise<TurnOutcome> {
-    const thread = this.ensureThread();
+  async runTurn(stage: Stage, attempt: number, prompt: string, outputSchema?: unknown, signal?: AbortSignal): Promise<TurnOutcome> {
+    signal?.throwIfAborted();
+    const thread = this.codex ? this.ensureThread() : null;
     const t0 = Date.now();
     const outcome: TurnOutcome = { finalResponse: "", usage: null, commands: [], fileChanges: [], itemCount: 0, durationMs: 0, failed: null, threadId: null };
     this.log(stage, "turn.prompt", { attempt, chars: prompt.length });
     const ac = new AbortController();
+    const cancel = () => ac.abort(signal?.reason);
+    signal?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => ac.abort(), this.cfg.turnTimeoutMs);
     try {
       // provider 不认服务端 schema 时(如小米 MiMo 的 Responses 只收 text / json_object),
       // 把 schema 写进提示词而不是硬传 —— 传了会被整轮拒掉,阶段直接 failed。
       const shaped = withOutputSchema(prompt, outputSchema, structuredOutputMode(this.cfg.providerProfile));
-      const { events } = await thread.runStreamed(shaped.prompt, { ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}), signal: ac.signal });
-      for await (const ev of events) {
+      const record = (ev: ThreadEvent) => {
+        if (ev.type === "thread.started") this.workerThreadId = ev.thread_id;
         this.record(stage, attempt, ev, outcome);
-        if (ev.type === "turn.failed") { outcome.failed = ev.error?.message ?? "turn.failed"; break; }
-        if (ev.type === "error") { outcome.failed = `stream error: ${ev.message}`; break; }
+        if (ev.type === "turn.failed") outcome.failed ??= ev.error?.message ?? "turn.failed";
+        if (ev.type === "error") outcome.failed ??= `stream error: ${ev.message}`;
+      };
+      if (thread) {
+        const { events } = await thread.runStreamed(shaped.prompt, { ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}), signal: ac.signal });
+        for await (const ev of events) { record(ev); if (outcome.failed) break; }
+      } else {
+        await runCodexSdkTurn({ options: this.codexOptions, threadOptions: this.threadOptions(), threadId: this.workerThreadId,
+          prompt: shaped.prompt, ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}) }, ac.signal, this.cfg.turnTimeoutMs + 5000, record);
       }
     } catch (e) {
-      outcome.failed = ac.signal.aborted ? `turn 超时(${this.cfg.turnTimeoutMs} ms)` : e instanceof Error ? e.message : String(e);
+      // A failed tree shutdown is not a cancellation acknowledgement.
+      if ((e as NodeJS.ErrnoException)?.code === "STOP_FAILED") throw e;
+      outcome.failed = signal?.aborted ? "用户取消研究" : outcome.failed ?? (ac.signal.aborted ? `turn 超时(${this.cfg.turnTimeoutMs} ms)` : e instanceof Error ? e.message : String(e));
       this.log(stage, "turn.exception", { attempt, message: outcome.failed });
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
     }
     outcome.durationMs = Date.now() - t0;
-    outcome.threadId = thread.id;
+    outcome.threadId = this.threadId;
     this.log(stage, "turn.done", { attempt, duration_ms: outcome.durationMs, commands: outcome.commands.length, failed: outcome.failed, usage: outcome.usage });
     return outcome;
   }

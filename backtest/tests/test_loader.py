@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 import sys
 import pathlib
+import json
+from types import SimpleNamespace
 from datetime import date, timedelta
 
 import pandas as pd
@@ -20,6 +22,22 @@ from backtest.loader import (  # noqa: E402
     SymbolProvenance, _frame_from_yahoo, _to_ns_index, _yahoo_range, assert_a_share_stock,
     canonical_code, market_of,
 )
+
+
+def test_failed_fetch_preserves_stdout_error_envelope(tmp_path, monkeypatch):
+    import backtest.loader as loader
+    envelope = {"status": "failed", "errors": [{"source": "fixture", "endpoint": "test", "error": "HTTP 429 请求过快"}]}
+    monkeypatch.setattr(loader.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=3, stdout=json.dumps(envelope), stderr=""))
+    with pytest.raises(LoaderError, match="HTTP 429 请求过快"):
+        loader._run_fetch("fixture", "AAPL", {}, tmp_path, sys.executable, 3)
+
+
+@pytest.mark.parametrize("stdout", ["not JSON", "[]", '{"errors":null}', '{"errors":[null,7,{"error":42}]}'])
+def test_failed_fetch_malformed_envelope_keeps_stderr_cause(tmp_path, monkeypatch, stdout):
+    import backtest.loader as loader
+    monkeypatch.setattr(loader.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=3, stdout=stdout, stderr="fixture interpreter failed"))
+    with pytest.raises(LoaderError, match="fixture interpreter failed"):
+        loader._run_fetch("fixture", "AAPL", {}, tmp_path, sys.executable, 3)
 
 
 @pytest.mark.parametrize("raw,want", [
@@ -71,6 +89,14 @@ def test_non_stock_a_share_codes_refused(code):
 @pytest.mark.parametrize("code", ["600519.SH", "300308.SZ", "000001.SZ", "430139.BJ"])
 def test_stock_codes_pass(code):
     assert_a_share_stock(code) is None
+
+
+def test_pre_bse_history_refused_before_fetch(tmp_path, monkeypatch):
+    import backtest.loader as loader
+    monkeypatch.setattr(loader, "_run_fetch", lambda *a: pytest.fail("unsupported history must not fetch"))
+    ld = VibeLoader(out_dir=tmp_path)
+    with pytest.raises(LoaderError, match="2021-11-15"):
+        ld._fetch_one("430047.BJ", "2020-01-01", "2024-01-01")
 
 
 # ── 时间分辨率：最重要的一条 ──

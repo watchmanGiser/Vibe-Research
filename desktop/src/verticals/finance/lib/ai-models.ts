@@ -22,7 +22,7 @@ export type ProviderId =
   | "deepseek" | "silicon" | "openai" | "minimax" | "openrouter"
   | "groq" | "together" | "mimo" | "glm" | "kimi" | "qwen"
   | "openai-compatible"
-  | "cli-codex" | "cli-claude";
+  | "cli-codex" | "cli-claude" | "cli-codebuddy";
 
 export interface ModelConfig {
   /** 真正传给引擎的 model 名 */
@@ -63,6 +63,7 @@ export const AI_MODELS: ModelConfig[] = [
   //    后端现在对订阅档一律不转发模型名，这里也不再摆一个假模型名出来。
   { id: "codex", name: "Codex 订阅", description: "用产品自带引擎的登录态，免 key（推荐）", provider: "cli-codex" },
   { id: "claude-code", name: "Claude Code", description: "用本机 Claude.ai 订阅，免 API key", provider: "cli-claude" },
+  { id: "codebuddy", name: "WorkBuddy / CodeBuddy", description: "用本机 CodeBuddy 已登录账号，免 API key", provider: "cli-codebuddy" },
 
   // —— API 档（填自己的 key）。带模板的排前面 ——
   { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", description: "DeepSeek 官方 · 快而省", provider: "deepseek" },

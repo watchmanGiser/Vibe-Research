@@ -18,6 +18,7 @@ rsync -a \
   --exclude '/.local/' \
   --exclude '/.venv/' \
   --exclude '/.playwright-cli/' \
+  --exclude '/output/' \
   --exclude '/desktop/node_modules/' \
   --exclude '/orchestrator/node_modules/' \
   --exclude '/backend/' \

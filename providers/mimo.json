@@ -19,7 +19,7 @@
     "两个模型:mimo-v2.5(快,日常首选,本模板默认)/ mimo-v2.5-pro(推理模型,更准但慢,开放问题可几十秒)。",
     "context_limit_tokens 留 null:官方没给公开数字,不猜。",
     "⚠️ 按分钟计的请求数敏感:多个批量任务挤在同一分钟会 429 Too Many Requests(与配额耗尽的 429 是两回事)。",
-    "⚠️ 慢:profile 阶段单轮约 4.7 分钟(默认 turn 超时 20 分钟够用,但把超时压到 5 分钟会连续两次超时)。"
+    "⚠️ 慢:profile 阶段单轮约 4.7 分钟(产品默认 turn 超时 30 分钟；把超时压到 5 分钟会连续两次超时)。"
   ],
   "matrix": {
     "status": "partial",
@@ -37,5 +37,17 @@
       "9": "pass",
       "10": "n/a"
     }
+  },
+  "direct": {
+    "supported": true,
+    "default_model": "mimo-v2.5",
+    "structured_output": "server_schema",
+    "verified_at": "2026-09-04",
+    "notes": [
+      "2026-09-04 实测直连(POST /v1/chat/completions,非流式)五项全过:普通对话 / 工具调用(finish_reason=tool_calls,arguments 是合法 JSON)/ 多轮(tool 角色喂回结果后能正确读出)/ 服务端 json_schema / 坏密钥 401 且不回显密钥。",
+      "🔴 **与 Responses 端点的能力反差**:同一家,Responses 不支持 text.format.type=json_schema(顶层 structured_output 因此是 prompt),而 Chat Completions **支持** response_format.json_schema ⇒ 直连在这家反而拿得到服务端 schema 约束。所以直连不能复用顶层那个字段。",
+      "⚠️ 未测流式(第一版直连不走流式)。要加流式时这里要重测:SSE 分帧、tool_calls 跨 delta 拼接、断流重试三项都可能有各家差异。",
+      "⚠️ 按分钟计的请求数敏感(与 Responses 侧同一限制):批量任务错峰,别挤同一分钟。"
+    ]
   }
 }

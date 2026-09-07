@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
@@ -11,6 +12,7 @@ import { detectSourceConflicts, mergeEvidence, rawHashes } from "../src/merge.ts
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "../src/schemas.ts";
 import { loadLedgerFromDisk, saveLedger } from "../src/fetchrun.ts";
+import { loadProductConfig } from "../src/productConfig.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
@@ -49,6 +51,19 @@ function calc(fn: string, refs: { ref_type: "evidence" | "calculation"; ref_id: 
     output: { status, value: status === "ok" ? 1.5 : null, unit: "倍", reason: "", details: {} } };
 }
 const gap = (operation: string, reason_code = "source_failed") => ({ operation, reason_code, detail: "x" });
+
+test("缺失行情不能把 normal 当作有效决策", () => {
+  const d = tmpRun();
+  try {
+    putFetch(d, "fetch_profile", "ok", [ev("ev-aaaaa1", "security_name", "合成样本")]);
+    putFetch(d, "fetch_quote", "failed", []);
+    writeJson(path.join(d, "stages", "profile.json"), {
+      stage: "profile", status: "incomplete", summary: "行情缺口", evidence_ids: ["ev-aaaaa1"],
+      calculation_ids: [], gaps: [gap("fetch_quote")], quote_decision: "normal", quote_decision_reason: "无行情", moat_tag: "待补",
+    });
+    assert.ok(validateStage("profile", loadRun(d)).errors.some(e => e.includes("quote_decision 应为 unknown_unverified")));
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
 
 test("schema:evidence / fetch / calc / 阶段产物(additionalProperties 关闭)", () => {
   assert.deepEqual(validateEvidenceItem(ev("ev-aaaaaa", "price", 943)), []);
@@ -103,9 +118,42 @@ test("确定性报价判定:normal / pre_open / stale / 未来日期 / unknown �
   d = tmpRun(); profileRun(d, { is_stale: false, quote_date: "2026-08-25" }, cal);
   assert.equal(deriveQuoteDecision(loadRun(d)).decision, "stale");
   d = tmpRun(); profileRun(d, { is_stale: "unknown", quote_date: "2026-08-21" }, cal, { end: "2026-08-21" });
-  assert.equal(deriveQuoteDecision(loadRun(d)).decision, "normal");
+  assert.equal(deriveQuoteDecision(loadRun(d)).decision, "unknown_unverified");
+  for (const [volume, period, expected] of [[0, "2026-08-21", "unknown_unverified"], [-1, "2026-08-21", "unknown_unverified"], [42, "2026-08-20", "unknown_unverified"], [42, "2026-08-21", "normal"]] as const) {
+    putFetch(d, "fetch_kline", "partial", [ev("ev-aaaabc", "volume_latest", volume, { period })], { end: "2026-08-21" });
+    assert.equal(deriveQuoteDecision(loadRun(d)).decision, expected);
+  }
   d = tmpRun(); profileRun(d, { is_stale: "unknown", quote_date: "2026-08-21" }, cal);
   assert.equal(deriveQuoteDecision(loadRun(d)).decision, "unknown_unverified");
+});
+
+test("序列语义绑定:真实 calc 错列、过滤、文件、期间和内联序列不能冒充历史证据", () => {
+  const d = tmpRun();
+  try {
+    const csv = "date,peTTM,close,tradestatus\n" + Array.from({ length: 25 }, (_, i) => `2025-01-${String(i + 1).padStart(2, "0")},${i + 1},${100 + i},1`).join("\n");
+    for (const f of ["pe.csv", "other.csv"]) fs.writeFileSync(path.join(d, "raw", f), csv);
+    const historyEvidence = ev("ev-abcd01", "pe_ttm_traded_history_points", 25, { raw_ref: "raw/pe.csv", period: "2025-01-01..2025-01-25" });
+    putFetch(d, "fetch_pe_history", "ok", [historyEvidence, ev("ev-abcd02", "pe_ttm", 20)]);
+    const good = { raw_ref: "raw/pe.csv", column: "peTTM", where: { tradestatus: "1" }, date_column: "date" };
+    for (const [history, period, ok] of [
+      [{ history_csv: good }, historyEvidence.period, true],
+      [{ history_csv: { ...good, column: "close" } }, historyEvidence.period, false],
+      [{ history_csv: { ...good, where: {} } }, historyEvidence.period, false],
+      [{ history_csv: { ...good, raw_ref: "raw/other.csv" } }, historyEvidence.period, false],
+      [{ history_csv: good }, "2024-01-01..2025-01-25", false],
+      [Array.from({ length: 25 }, (_, i) => i + 1), historyEvidence.period, false],
+    ] as const) {
+      putFetch(d, "fetch_pe_history", "ok", [{ ...historyEvidence, period }, ev("ev-abcd02", "pe_ttm", 20)]);
+      const python = loadProductConfig(REPO, { env: process.env, requireAuth: false }).python ?? process.env.VRA_PYTHON ?? "python3";
+      const proc = spawnSync(python, [path.join(REPO, "calc", "cli.py"), "percentile_rank", "--args", JSON.stringify({ history, current: 20 }), "--run-dir", d, "--evidence", "ev-abcd01", "ev-abcd02"], { encoding: "utf8" });
+      assert.equal(proc.status, 0, proc.stdout + proc.stderr);
+      const record = JSON.parse(proc.stdout);
+      writeJson(path.join(d, "calcs", "percentile.json"), record);
+      writeJson(path.join(d, "stages", "valuation.json"), { stage: "valuation", status: "incomplete", summary: "ok", evidence_ids: ["ev-abcd01", "ev-abcd02"], calculation_ids: [record.calculation_id], gaps: [], standard_columns: {} });
+      const errors = validateStage("valuation", loadRun(d)).errors.filter(e => e.includes("序列实参"));
+      assert.equal(errors.length === 0, ok, JSON.stringify({ history, period, errors }));
+    }
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
 test("profile 阶段:缺账本 / 缺阶段文件 → 不过;quote_decision 与推导不符 → 不过;齐全 → 过", () => {
@@ -324,6 +372,8 @@ test("risk 阶段:权威冲突必须以 ref_id 全覆盖;空壳条目不过", ()
   writeJson(path.join(d, "stages", "risk.json"), { ...base, source_conflicts: [{ field: "total_market_cap", period: "2026-08-21", kind: "source", values: [{ source: "tencent", value: 100, ref_id: "ev-aaaa01" }, { source: "eastmoney", value: 120, ref_id: "ev-aaaa02" }] }] });
   r = validateStage("risk", loadRun(d));
   assert.deepEqual(r.errors, []);
+  writeJson(path.join(d, "stages", "risk.json"), { ...base, source_conflicts: [{ field: "total_market_cap", kind: "source", values: [{ source: "tencent", value: 100, ref_id: "ev-aaaa01" }, { source: "eastmoney", value: 120, ref_id: "ev-aaaa02" }] }] });
+  assert.ok(validateStage("risk", loadRun(d)).errors.some(e => e.includes("未覆盖权威冲突")));
 });
 
 test("账本认证:agent 同时改写 fetch 文件与磁盘账本 → 内存账本仍判不一致;未登记的 fetch / raw 文件 → 不过;agent 改动 fetch/ raw/ 轨迹 → 违规", () => {
@@ -516,4 +566,23 @@ test("🔴 取数层的契约违约要能被认出来 —— agent 改不了它,
   ]) {
     assert.ok(!isUpstreamContractError(e), `不该判成取数层:${e}`);
   }
+});
+
+test("🔴 calc 文件不是计算记录时:报清楚的错,而不是崩在 validator 里", () => {
+  const d = tmpRun();
+  // 2026-09-04 真踩:模型把 calculate 的 function 传成 "list",calc/cli.py 打印的是**函数清单**
+  // (合法 JSON、退出码 0),文件照写。validator 读到它、访问 record.output.status → TypeError,
+  // 整次运行崩掉,只留一句 "Cannot read properties of undefined" —— 真正的问题一个字都没说。
+  // 与用哪个引擎无关:任何写出畸形 calc 的 agent 都会触发。
+  writeJson(path.join(d, "calcs", "00_list.json"), { calc_version: "0.3.2", functions: { forward_pe: "远期市盈率" } });
+  // 阶段产物要在,否则 validateStage 在"缺少 stages/xxx.json"就早退,根本走不到 calc 循环
+  writeJson(path.join(d, "stages", "profile.json"), {
+    stage: "profile", status: "complete", summary: "s", evidence_ids: [], calculation_ids: [], gaps: [],
+    quote_decision: "normal", quote_decision_reason: "r", moat_tag: "待补",
+  });
+  let r: ReturnType<typeof validateStage>;
+  assert.doesNotThrow(() => { r = validateStage("profile", loadRun(d)); }, "畸形 calc 记录不该让 validator 抛异常");
+  const joined = r!.errors.join(" | ");
+  assert.match(joined, /00_list\.json/, "错误里必须点名是哪个文件");
+  assert.match(joined, /calculation 契约/, "要说清是不符计算记录契约,而不是别的什么毛病");
 });

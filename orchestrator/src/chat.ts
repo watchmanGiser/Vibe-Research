@@ -1,11 +1,12 @@
 /**
- * **自由对话通道**(Core)。
+ * **模型回合通道**(Core)。普通 Agent 由 assistant_turn 注入产品 MCP 工具；
+ * 下述无工具默认仅供连接探针、翻译和其他显式的一次性内部任务。
  *
  * 与「研究运行」是两件事,别混:
  * - 研究运行 = 六阶段状态机,产物带证据 id、可复算,写进知识层
  * - 对话     = 一问一答,**不产出证据、不写台账、不进知识层**
  *
- * 三条硬约束(都不是可选项):
+ * 内部无工具默认：
  * ① **无本地工具** —— Shell / 图片读取 / 插件 / MCP Apps / 多代理全部在本轮配置里关闭。
  *    对话只能看服务端主动放进提示词的页面上下文与命中片段,不能自己枚举或读取磁盘。
  * ② 不联网、不联网搜索 —— 数据只能来自服务端送入的上下文。要新数据就去起一次研究运行,
@@ -24,7 +25,7 @@ import { Codex, type CodexOptions, type Thread } from "@openai/codex-sdk";
 import { gatePatterns, makeConfig, type RunConfig } from "./config.ts";
 import { complianceGate } from "./gate.ts";
 import { currentPlugin } from "./plugin.ts";
-import { LocalAgentError, runLocalAgent, type RunLocalAgentOptions } from "./local_agent_runtime.ts";
+import { LocalAgentError, runLocalAgent, type LocalAgentId, type RunLocalAgentOptions } from "./local_agent_runtime.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { structuredOutputMode, withOutputSchema } from "./providers.ts";
 import { reportCitationErrors, type ReportSourceRef } from "./report_library.ts";
@@ -54,6 +55,7 @@ interface Session {
   dir: string;
   turns: number;
   lastUsed: number;
+  busy: boolean;
 }
 
 interface LocalSession {
@@ -111,26 +113,27 @@ const CHAT_FEATURES = Object.freeze({
   code_mode: false,
 });
 
-function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv, workingDirectory: string): CodexOptions {
+export function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv, workingDirectory: string, controlledMcp?: RunLocalAgentOptions["controlledMcp"]): CodexOptions {
   const realCodex = cfg.codexPath ?? sdkCodexVersion().binary;
   if (!realCodex || !fs.existsSync(realCodex)) {
     throw new ChatError("chat_engine_missing", "找不到产品捆绑的 Codex 引擎，无法安全启动对话");
   }
   // 直接启动官方二进制，避免 POSIX /bin/sh 包装器把 Windows 排除在外。
   // 用户配置里的工具面由下面的最高优先级 config 全量关闭，read-only 再挡住独立的 apply_patch 工具。
-  // 对话永远不创建研究轮的 vra_run MCP。Windows 的 cfg 默认是
+  // 不继承研究轮的阶段 MCP；普通 Agent 的工具仅由 controlledMcp 显式注入。Windows 的 cfg 默认是
   // controlled_mcp，若直接传给 codexOptionsFor，会先生成研究 MCP，再靠
   // 后一条 override 覆盖。即使 SDK 当前的同层最后写入语义能删掉它，
   // 对话边界也不应依赖这个隐含顺序。
   const base = codexOptionsFor({ ...cfg, executionMode: "shell_hooks", codexPath: realCodex }, engineEnv);
   // MCP 发现必须与线程的真实 cwd 完全一致。对话 cwd 是 dataRoot/chat/<session>，
   // 不是研究配置的 cfg.runDir；用错目录会漏掉会话目录下的 `.codex/config.toml`。
-  // 🔴 也必须与线程的真实 **env** 完全一致（#44）：`engineEnv` 是裸的 process.env / rt.env，
-  //    不含产品的 CODEX_HOME；拿它去跑 `codex mcp list` 读到的是用户全局 ~/.codex 的 MCP，
-  //    而线程本身跑在产品 CODEX_HOME 下、那些 server 并不存在 —— 把它们投影成只含
-  //    `enabled = false` 的根表，codex ≥0.149 直接报 `invalid transport`，对话与「测试并保存」全挂。
-  //    `base.env` 就是线程收到的那份 env（含 CODEX_HOME），发现与执行必须共用它。
-  const mcpIsolation = mcpIsolationOverride({ ...cfg, runDir: workingDirectory }, undefined, base.env);
+  // #44：发现与执行使用同一份已注入产品 CODEX_HOME 的环境，不能枚举用户全局 MCP。
+  const mcpIsolation = mcpIsolationOverride({ ...cfg, runDir: workingDirectory }, controlledMcp ? {
+    command: controlledMcp.command, args: controlledMcp.args, env: controlledMcp.env,
+    required: true, startup_timeout_sec: 20, tool_timeout_sec: 310,
+    default_tools_approval_mode: "approve",
+    enabled_tools: controlledMcp.allowedTools.map((name) => name.split("__").at(-1)!),
+  } : undefined, base.env);
   const baseConfig = (base.config ?? {}) as Record<string, unknown>;
   const foreignSkills = listForeignSkillPaths({ codexHome: cfg.codexHome, productRoots: [cfg.repoRoot] });
   return {
@@ -158,19 +161,19 @@ const localSessions = new Map<string, LocalSession>();
 
 function sweep(): void {
   const now = Date.now();
-  for (const [k, s] of sessions) if (now - s.lastUsed > SESSION_IDLE_MS) sessions.delete(k);
+  for (const [k, s] of sessions) if (!s.busy && now - s.lastUsed > SESSION_IDLE_MS) sessions.delete(k);
   for (const [k, s] of localSessions) {
     if (!s.busy && now - s.lastUsed > SESSION_IDLE_MS) localSessions.delete(k);
   }
 }
 
-function reserveLocalSessionSlot(): void {
-  while (localSessions.size >= MAX_LOCAL_SESSIONS) {
-    const oldest = [...localSessions.entries()]
+function reserveLocalSessionSlot(pool: Map<string, { busy: boolean; lastUsed: number }> = localSessions): void {
+  while (pool.size >= MAX_LOCAL_SESSIONS) {
+    const oldest = [...pool.entries()]
       .filter(([, s]) => !s.busy)
       .sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
     if (!oldest) throw new ChatError("chat_capacity", "本地 Agent 对话正忙，请稍后再试");
-    localSessions.delete(oldest[0]);
+    pool.delete(oldest[0]);
   }
 }
 
@@ -192,7 +195,7 @@ function publicLocalAgentFailure(error: LocalAgentError): ChatError {
   };
   return new ChatError(
     error.code,
-    messages[error.code] ?? "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。",
+    messages[error.code] ?? "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。",
   );
 }
 
@@ -240,6 +243,8 @@ export async function chatSend(
     dataRoot?: string;
     python?: string;
     maxMessage?: number;
+    /** Internal long-task deadline; never read from the HTTP request body. */
+    timeoutMs?: number;
     /** 内部专用：放进引擎的 developer 层，外部 HTTP 请求不能指定。 */
     developerInstructions?: string;
     /** 内部专用：固定结构化输出；仍需调用方自己解析校验。 */
@@ -255,7 +260,9 @@ export async function chatSend(
     /** 与 contextText 同源的可引用资料；最终可见回答必须至少保留一个真实 id / 页码。 */
     reportSources?: readonly ReportSourceRef[];
     /** 测试注入用；HTTP 请求体到不了 opts。 */
-    localAgentRunner?: (agent: "claude", opts: RunLocalAgentOptions) => Promise<string>;
+    localAgentRunner?: (agent: LocalAgentId, opts: RunLocalAgentOptions) => Promise<string>;
+    /** Product-owned tools for ordinary Agent chat. Internal probes/translations omit this. */
+    controlledMcp?: RunLocalAgentOptions["controlledMcp"];
     /** HTTP 客户端断开或页面主动停止时，中止仍在运行的本机 Agent / Codex 轮次。 */
     signal?: AbortSignal;
   },
@@ -267,6 +274,10 @@ export async function chatSend(
   const message = String(req.message ?? "").trim();
   if (!message) throw new ChatError("empty_message", "消息不能为空");
   if (opts.signal?.aborted) throw new ChatError("chat_cancelled", "对话请求已取消");
+  const timeoutMs = opts.timeoutMs ?? TURN_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+    throw new ChatError("bad_timeout", "内部任务超时须为 1–600000 毫秒");
+  }
   const maxMessage = Math.max(1, Math.min(Number(opts.maxMessage) || MAX_MESSAGE, 64_000));
   if (message.length > maxMessage) throw new ChatError("message_too_long", `消息过长(> ${maxMessage} 字符)`);
 
@@ -335,8 +346,8 @@ export async function chatSend(
     const opening = opts.preambleText ?? preamble();
     const systemPrompt = [opening, opts.developerInstructions ?? ""].filter(Boolean).join("\n\n---\n\n");
     const turnBody = context ? `${context}\n\n---\n\n【用户本轮问题】\n${message}` : message;
-    // Claude Code 的 `--no-session-persistence` 保证 CLI 不把会话写进自己的历史；
-    // 产品只在本进程内保留有限上下文，与 Codex 对话“API 重启即清空”的边界一致。
+    // 新版本机 CLI 用 `--no-session-persistence`；缺少该参数的 WorkBuddy 内置旧版改在
+    // 一次性用户目录中运行。产品只在本进程内保留有限上下文，API 重启即清空。
     const historyParts: string[] = [];
     let historyChars = 0;
     for (const x of local.turns.slice(-LOCAL_HISTORY_TURNS).reverse()) {
@@ -354,9 +365,10 @@ export async function chatSend(
       raw = await (opts.localAgentRunner ?? runLocalAgent)(rt.agent, {
         systemPrompt,
         userPrompt,
+        ...(opts.controlledMcp ? { controlledMcp: opts.controlledMcp } : {}),
         ...(opts.outputSchema !== undefined ? { outputSchema: opts.outputSchema } : {}),
         env: rt.env,
-        timeoutMs: TURN_TIMEOUT_MS,
+        timeoutMs,
         signal: opts.signal,
       });
     } catch (e) {
@@ -413,8 +425,8 @@ export async function chatSend(
   //    (Codex 复审 mimo-r2 P1)。`codexOptionsFor(cfg)` 就是 `new Codex(...)` 收到的原物,
   //    它一变,线程就必须重开。
   // ⚠️ 这个哈希里含密钥派生值 ⇒ **只留在内存里当 Map 的键,永不落盘、永不进日志**。
-  // 认证只从产品 CODEX_HOME 读取；产品侧禁用外部 skills，下面再显式关闭全部内置工具与 MCP。
-  const baseCodexOptions = chatCodexOptions(cfg, engineEnv, dir);
+  // 认证只从产品 CODEX_HOME 读取；禁用外部 skills 与内置宿主工具，仅挂载本轮产品 MCP。
+  const baseCodexOptions = chatCodexOptions(cfg, engineEnv, dir, opts.controlledMcp);
   const baseConfig = (baseCodexOptions.config ?? {}) as Record<string, unknown>;
   const codexOptions: CodexOptions = {
     ...baseCodexOptions,
@@ -437,6 +449,7 @@ export async function chatSend(
   const sessionKey = `${path.resolve(cfg.dataRoot)}\u0000${providerFingerprint}\u0000${reportScopeFingerprint}\u0000${session}`;
   const persistent = opts.persistent !== false;
   let s = persistent ? sessions.get(sessionKey) : undefined;
+  if (s?.busy) throw new ChatError("chat_busy", "这个 Agent 会话正在回答上一条消息");
   if (s && s.turns >= MAX_TURNS) {
     // 线程越长越贵、也越容易漂;到上限换一条新的
     sessions.delete(sessionKey);
@@ -444,18 +457,19 @@ export async function chatSend(
   }
 
   if (!s) {
+    if (persistent) reserveLocalSessionSlot(sessions);
     const codex = codexFactory(codexOptions);
     const thread = codex.startThread({
       // 每个会话仍放在自己的数据根目录下做隔离；启动器忽略用户规则，规则只来自上面的 preamble。
       workingDirectory: dir,
       sandboxMode: "read-only", // 🔴 对话只读:它能看产物,改不了任何东西
       skipGitRepoCheck: true, // 数据目录不是 git 仓库;这道门保护不到任何东西(同 runner.ts 的说明)
-      networkAccessEnabled: false, // 🔴 不联网:数据只能来自已落盘产物,别绕开取数纪律
+      networkAccessEnabled: false, // 宿主命令无网络；Agent 的联网由产品 MCP 工具执行并留档。
       approvalPolicy: "never",
       webSearchMode: "disabled",
       model: cfg.model ?? cfg.providerProfile?.default_model ?? undefined,
     });
-    s = { thread, dir, turns: 0, lastUsed: Date.now() };
+    s = { thread, dir, turns: 0, lastUsed: Date.now(), busy: false };
     if (persistent) sessions.set(sessionKey, s);
   }
 
@@ -468,8 +482,9 @@ export async function chatSend(
   const onExternalAbort = () => ac.abort();
   opts.signal?.addEventListener("abort", onExternalAbort, { once: true });
   if (opts.signal?.aborted) ac.abort();
-  const timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   let raw = "";
+  s.busy = true;
   try {
     const { events } = await s.thread.runStreamed(shaped.prompt, {
       ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}),
@@ -486,15 +501,16 @@ export async function chatSend(
     if (e instanceof ChatError) throw e;
     if (ac.signal.aborted) {
       if (opts.signal?.aborted) throw new ChatError("chat_cancelled", "对话请求已取消");
-      throw new ChatError("timeout", `对话超时(${TURN_TIMEOUT_MS / 1000} 秒)`);
+      throw new ChatError("timeout", `对话超时(${timeoutMs / 1000} 秒)`);
     }
     throw publicAgentFailure(e, rt);
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onExternalAbort);
+    s.busy = false;
+    s.lastUsed = Date.now();
   }
   s.turns += 1;
-  s.lastUsed = Date.now();
 
   const clean = scrubKey(raw, rt);
   const { reply, redacted } = opts.skipGate ? { reply: clean, redacted: 0 } : applyGate(clean);
@@ -546,20 +562,16 @@ const HEADLINE_TRANSLATION_SCHEMA = {
   },
 } as const;
 
-/**
- * 一次性标题翻译：developer 指令与 RSS 数据分层、固定 schema、每批新线程。
- * 返回值仍逐字段复核；结构化输出只是提高命中率，不是安全边界。
- */
-export async function translateHeadlines(
-  opts: { repoRoot: string; dataRoot?: string; python?: string; signal?: AbortSignal },
-  req: { items: HeadlineTranslationItem[]; llm?: LlmOverride },
-  codexFactory: (o: CodexOptions) => Codex = (o) => new Codex(o),
-): Promise<HeadlineTranslationResult> {
-  if (!Array.isArray(req.items) || req.items.length < 1 || req.items.length > 16) {
+export function prepareHeadlineTranslation(itemsInput: HeadlineTranslationItem[]): {
+  items: HeadlineTranslationItem[];
+  developerInstructions: string;
+  schema: typeof HEADLINE_TRANSLATION_SCHEMA;
+} {
+  if (!Array.isArray(itemsInput) || itemsInput.length < 1 || itemsInput.length > 16) {
     throw new ChatError("bad_translation_items", "标题翻译每批只接受 1–16 条");
   }
   const seen = new Set<string>();
-  const items = req.items.map((row) => {
+  const items = itemsInput.map((row) => {
     if (!row || typeof row !== "object" || Array.isArray(row)) throw new ChatError("bad_translation_items", "标题条目必须是对象");
     const id = String(row.id ?? "");
     const title = String(row.title ?? "").trim();
@@ -568,26 +580,15 @@ export async function translateHeadlines(
     seen.add(id);
     return { id, title };
   });
-  const turn = await chatSend(
-    {
-      ...opts,
-      maxMessage: 12_000,
-      developerInstructions: HEADLINE_TRANSLATION_INSTRUCTIONS,
-      outputSchema: HEADLINE_TRANSLATION_SCHEMA,
-      persistent: false,
-      preambleText: "",
-      skipGate: true,
-    },
-    { session: "headline-translation", message: JSON.stringify({ items }), ...(req.llm ? { llm: req.llm } : {}) },
-    codexFactory,
-  );
+  return { items, developerInstructions: HEADLINE_TRANSLATION_INSTRUCTIONS, schema: HEADLINE_TRANSLATION_SCHEMA };
+}
 
+export function parseHeadlineTranslationReply(
+  reply: string, items: readonly HeadlineTranslationItem[], durationMs: number,
+): HeadlineTranslationResult {
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(turn.reply);
-  } catch {
-    throw new ChatError("bad_translation_output", "模型没有返回可读的标题翻译 JSON");
-  }
+  try { parsed = JSON.parse(reply); }
+  catch { throw new ChatError("bad_translation_output", "模型没有返回可读的标题翻译 JSON"); }
   const rows = (parsed as { items?: unknown } | null)?.items;
   if (!Array.isArray(rows)) throw new ChatError("bad_translation_output", "模型返回里缺少 items 数组");
   const allowed = new Set(items.map((x) => x.id));
@@ -604,12 +605,42 @@ export async function translateHeadlines(
     if (!complianceGate(zh).ok) { redacted += 1; continue; }
     out.push({ id, zh });
   }
-  return { items: out, redacted, duration_ms: turn.duration_ms };
+  return { items: out, redacted, duration_ms: durationMs };
+}
+
+/**
+ * 一次性标题翻译：developer 指令与 RSS 数据分层、固定 schema、每批新线程。
+ * 返回值仍逐字段复核；结构化输出只是提高命中率，不是安全边界。
+ */
+export async function translateHeadlines(
+  opts: { repoRoot: string; dataRoot?: string; python?: string; signal?: AbortSignal },
+  req: { items: HeadlineTranslationItem[]; llm?: LlmOverride },
+  codexFactory: (o: CodexOptions) => Codex = (o) => new Codex(o),
+): Promise<HeadlineTranslationResult> {
+  const prepared = prepareHeadlineTranslation(req.items);
+  const { items } = prepared;
+  const turn = await chatSend(
+    {
+      ...opts,
+      maxMessage: 12_000,
+      developerInstructions: prepared.developerInstructions,
+      outputSchema: prepared.schema,
+      persistent: false,
+      preambleText: "",
+      skipGate: true,
+    },
+    { session: "headline-translation", message: JSON.stringify({ items }), ...(req.llm ? { llm: req.llm } : {}) },
+    codexFactory,
+  );
+
+  return parseHeadlineTranslationReply(turn.reply, items, turn.duration_ms);
 }
 
 export interface LlmProbeResult {
   ok: true;
   duration_ms: number;
+  direct_supported?: boolean;
+  direct_reason?: string;
 }
 
 const LLM_PROBE_INSTRUCTIONS = [
@@ -672,11 +703,11 @@ function publicAgentFailure(error: unknown, rt: ResolvedRuntimeProvider | null):
     return new ChatError("agent_not_ready", "当前 AI 登录已失效或尚未完成。请先到「接入 AI」重新连接。");
   }
   if (AGENT_TRANSPORT_DETAIL.test(clean)) {
-    return new ChatError("turn_failed", "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。");
+    return new ChatError("turn_failed", "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。");
   }
   // SDK / 上游的未知报错同样是内部诊断信息。默认不透传，只有进入本函数前由产品自己构造的
   // ChatError / RuntimeProviderError / LocalAgentError 才保留具体、可行动的产品文案。
-  return new ChatError("turn_failed", "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。");
+  return new ChatError("turn_failed", "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。");
 }
 
 /**
@@ -686,7 +717,7 @@ function publicAgentFailure(error: unknown, rt: ResolvedRuntimeProvider | null):
  *    整段拦下会把一个有用的回答变成一句空话,而用户看不出是误判还是真违规。
  *    被移除的行**显式标出来**,让用户知道这里少了东西、以及为什么。
  */
-function applyGate(text: string): { reply: string; redacted: number } {
+export function applyGate(text: string): { reply: string; redacted: number } {
   if (!text.trim()) return { reply: "(没有拿到回答)", redacted: 0 };
   const g = complianceGate(text);
   if (g.ok) return { reply: text, redacted: 0 };

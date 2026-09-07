@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sources._http import DataNotAvailable, assert_us_ticker, official_get  # noqa: E402
+from sources._http import DataNotAvailable, ResourceUnavailable, assert_us_ticker, official_get  # noqa: E402
 
 _CIK_CACHE: dict = {}
 _FORM_LABEL = {"4": "内部人交易", "8-K": "重大事件", "13F-HR": "机构持仓", "144": "限售股拟出售", "10-K": "年报", "10-Q": "季报", "SC 13D": "举牌(主动)", "SC 13G": "举牌(被动)", "S-1": "IPO注册"}
@@ -84,11 +84,13 @@ def sec_xbrl_facts(ticker: str, metrics: Optional[list] = None, last_n: int = 12
 
 def daily_filings(date: Optional[str] = None, forms: Optional[list] = None) -> dict:
     """每日申报索引:{date, total, by_form, filings:[{form, form_label, company, cik, date, url}]};date=YYYYMMDD,缺省回退最近有数据的工作日。"""
+    last_error = None
     for d in ([date] if date else _recent_weekdays(7)):
         dt = datetime.strptime(d, "%Y%m%d")
         try:
             raw = official_get(f"https://www.sec.gov/Archives/edgar/daily-index/{dt.year}/QTR{(dt.month - 1) // 3 + 1}/form.{d}.idx")
-        except DataNotAvailable:
+        except ResourceUnavailable as exc:
+            last_error = exc
             continue
         lines = raw.splitlines()
         start = next((i + 1 for i, ln in enumerate(lines) if ln.startswith("---")), 11)
@@ -105,7 +107,7 @@ def daily_filings(date: Optional[str] = None, forms: Optional[list] = None) -> d
             filings.append({"form": form, "form_label": _FORM_LABEL.get(form, ""), "company": company, "cik": cik, "date": filed, "url": f"https://www.sec.gov/Archives/{path}" if path else None})
         if by_form:
             return {"date": d, "total": sum(by_form.values()), "by_form": dict(sorted(by_form.items(), key=lambda x: -x[1])), "filings": filings}
-    raise DataNotAvailable("未找到近 7 个工作日的 EDGAR 每日索引")
+    raise ResourceUnavailable("未取得有效 EDGAR 每日索引，无法确认是否有申报数据") from last_error
 
 
 def fulltext_search(query: str, forms: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None, limit: int = 20) -> dict:
@@ -138,7 +140,7 @@ def market_frame(tag: str, year: Optional[int] = None, quarter: Optional[int] = 
         period = _frame_period(year, quarter, is_inst)
         try:
             j = official_get(f"https://data.sec.gov/api/xbrl/frames/us-gaap/{tag}/{unit}/{period}.json", timeout=45, as_json=True)
-        except DataNotAvailable as e:
+        except ResourceUnavailable as e:
             last = e
             continue
         rows = [{"cik": d.get("cik"), "entity": d.get("entityName"), "value": d.get("val"), "end": d.get("end")} for d in j.get("data", [])]

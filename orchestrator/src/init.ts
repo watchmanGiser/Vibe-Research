@@ -116,9 +116,9 @@ export function runInit(opts: { repoRoot?: string; python?: string; provider?: s
   steps.push({ id: "instructions_root", action: markerCreated || prm.changed ? "written" : "exists", detail: `${path.join(repoRoot, ROOT_MARKER_FILENAME)} + ${prm.configTomlPath} 的 project_root_markers(引擎靠它才能发现 AGENTS.md 与 .agents/skills)` });
   steps.push({ id: "skills_isolation", action: iso.changed ? "written" : "exists", detail: `${path.join(codexHome, "config.toml")}(禁用用户级 skill ${iso.disabledPaths.length} 个;捆绑 skills 已关;max_context_tokens=${iso.maxContextTokens})` });
   const next = [
-    `登录到产品自己的 CODEX_HOME(ChatGPT 订阅):CODEX_HOME="${path.join(dataRoot, "codex-home")}" codex login`,
-    `或用 API key:export OPENAI_API_KEY=... 并加 --auth api_key(或在 ${path.relative(repoRoot, cfgFile)} 写 {"provider": {"auth": "api_key"}});第三方:export <ENV_KEY> + --provider <id>(见 providers/README.md)`,
-    `体检:node orchestrator/src/doctor.ts(加 --net 顺带探测数据源)`,
+    "运行 scripts/start（Windows: scripts\\start.cmd）打开产品",
+    "在‘接入 AI’里选择订阅或模型 API，测试成功后即可使用",
+    "排查环境:运行 scripts/doctor（Windows: scripts\\doctor.ps1）",
   ];
   return { repoRoot, dataRoot, steps, next };
 }

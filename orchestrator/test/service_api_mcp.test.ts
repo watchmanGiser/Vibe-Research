@@ -8,11 +8,17 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Thread } from "@openai/codex-sdk";
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
-import { ServiceError, assertArgs, chatSend, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
+import { ServiceError, assertArgs, chatSend, debateStart, fetchEndpoint, guidedToolTurn, ingestFiles, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, listTools, runToolRequest, redact, researchEnv, researchStatus, safePath, startResearch, translateHeadlines, type ServiceContext, displayUrl } from "../src/service.ts";
 import { writeJson } from "../src/fsutil.ts";
+import { reserveResearch, readResearchControl, updateResearchControl } from "../src/research_control.ts";
 import { detectPython } from "../src/init.ts";
+import { addReport } from "../src/report_library.ts";
+import { getDebate, startDebate as startDebateCore } from "../src/debate.ts";
+import { runtimeSourceFingerprint } from "../src/runtime_provider.ts";
+import { debateAdvance } from "../src/service.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
@@ -20,6 +26,70 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 /** 解释器:VRA_PYTHON → 仓库 .venv → 上一级 .venv(开发布局)→ PATH 上的 python3;不写死任何机器的绝对路径 */
 const PY = process.env.VRA_PYTHON ?? detectPython(REPO) ?? detectPython(path.join(REPO, "..")) ?? "python3";
 const TOKEN = "t".repeat(32);
+
+test("研究失败状态提供固定恢复提示，未知码不透传磁盘自由文本", () => {
+  const ctx = fakeCtx();
+  const dir = path.join(ctx.dataRoot, "runs", "failure-status");
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    for (const code of ["quota", "authentication", "timeout", "rate_limit"]) {
+      writeJson(path.join(dir, "manifest.json"), { status: "failed", exit_code: 3, finished_at: "2026-09-06T01:00:00Z", stages: [], failure_code: code, final_errors: ["SECRET_CANARY"] });
+      const state = researchStatus(ctx, "failure-status");
+      assert.equal(state.failure?.code, code);
+      assert.doesNotMatch(JSON.stringify(state.failure), /SECRET_CANARY/);
+    }
+    writeJson(path.join(dir, "manifest.json"), { status: "failed", finished_at: "2026-09-06T01:00:00Z", failure_code: "SECRET_CANARY" });
+    assert.equal(researchStatus(ctx, "failure-status").failure, null);
+    writeJson(path.join(dir, "manifest.json"), { status: "complete", finished_at: "2026-09-06T01:00:00Z", failure_code: "quota" });
+    assert.equal(researchStatus(ctx, "failure-status").failure, null);
+  } finally { fs.rmSync(ctx.dataRoot, { recursive: true, force: true }); }
+});
+
+test("界面选定来源的辩论沿用内部材料上限，而不是普通消息 4000 字", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-debate-long-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath, providerEnvKey: null };
+  const llm = { provider: "cli-codex" };
+  const id = "debate-long-source";
+  startDebateCore({ id, symbol: "300308", sourceFingerprint: runtimeSourceFingerprint(REPO, root, llm), gaps: [],
+    envelopes: [{ evidence: Array.from({ length: 80 }, (_, i) => ({ id: `ev-long-${i}`, field: "sample", value: "仅为验收的合成材料".repeat(10) })) }] });
+  let seen = "";
+  t.mock.method(Thread.prototype, "runStreamed", async (input: string) => {
+    seen = input;
+    return { events: (async function* () { yield { type: "item.completed", item: { type: "agent_message", text: "资料不足，无法下结论。" } }; })() };
+  });
+  const out = await debateAdvance(ctx, { id, llm });
+  assert.equal(out.stages[0]!.status, "done", out.stages[0]!.error);
+  assert.ok(seen.length > 4000);
+});
+
+test("研究取消 HTTP 接口：拒绝无鉴权和多余字段，重复请求保持等待确认", async () => {
+  const ctx = fakeCtx();
+  const owner = reserveResearch(ctx.dataRoot, "cancel-http");
+  const server = createApiServer(ctx, { token: TOKEN });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const post = (body: unknown, token = TOKEN) => fetch(`${base}/research/cancel`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+  });
+  try {
+    assert.equal((await post({ run_id: "cancel-http" }, "wrong")).status, 401);
+    assert.equal((await post({ run_id: "cancel-http", pid: process.pid })).status, 400);
+    for (let i = 0; i < 2; i++) {
+      const response = await post({ run_id: "cancel-http" });
+      assert.equal(response.status, 200);
+      const payload = await response.json();
+      assert.equal(payload.status, "cancelling"); assert.equal(payload.finished_at, null);
+      assert.ok(!JSON.stringify(payload).includes(owner.token));
+    }
+    assert.equal(readResearchControl(ctx.dataRoot, "cancel-http")?.state, "starting");
+    updateResearchControl(ctx.dataRoot, "cancel-http", owner.token, "cancelled");
+    assert.equal((await (await post({ run_id: "cancel-http" })).json()).status, "cancelled");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(ctx.repoRoot, { recursive: true, force: true });
+  }
+});
 
 function fakeNodeExecutable(dir: string, name: string, source: string): string {
   if (process.platform !== "win32") {
@@ -65,7 +135,129 @@ json.dump(env, open(os.path.join(out,'fetch',ep+'.json'),'w')); print(json.dumps
   return { repoRoot: repo, dataRoot, python: PY, node: process.execPath, providerEnvKey: "OPENAI_API_KEY" };
 }
 
+test("普通工具仅继承取数基础环境，不继承模型 key 或 VRA 私密配置", async () => {
+  const ctx = fakeCtx();
+  const { runTool } = await import("../src/service.ts");
+  const keys = ["TEST_RUNTIME_KEY", "VRA_API_TOKEN", "VRA_TASK_OBJECTIVE", "CODEX_HOME"];
+  const previous = keys.map(k => process.env[k]);
+  const moduleDir = path.join(ctx.repoRoot, "calc");
+  fs.mkdirSync(moduleDir);
+  fs.writeFileSync(path.join(moduleDir, "__init__.py"), "");
+  fs.writeFileSync(path.join(moduleDir, "tool.py"), `import os,json\nprint(json.dumps({k: k in os.environ for k in ${JSON.stringify([...keys, "PATH"])} }))\n`);
+  try {
+    for (const k of keys) process.env[k] = "synthetic-test-value";
+    ctx.providerEnvKey = keys[0]!;
+    const result = await runTool(ctx, "calc", {}) as Record<string, boolean>;
+    assert.equal(result.PATH, true);
+    for (const k of keys) assert.equal(result[k], false, `${k} 不属于普通工具环境`);
+  } finally {
+    keys.forEach((k, i) => { if (previous[i] === undefined) delete process.env[k]; else process.env[k] = previous[i]; });
+    fs.rmSync(ctx.repoRoot, { recursive: true, force: true });
+  }
+});
+
 const noAbs = (v: unknown, ctx: ServiceContext) => { const s = JSON.stringify(v); assert.ok(!s.includes(ctx.dataRoot) && !s.includes(ctx.repoRoot) && !s.includes(os.tmpdir()), `返回值含绝对路径:${s.slice(0, 200)}`); };
+
+async function waitUntil(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (!check() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(check(), "等待测试链路就绪超时");
+}
+
+function readTestPid(file: string): number {
+  const text = fs.readFileSync(file, "utf8").trim();
+  assert.match(text, /^[1-9]\d*$/, "测试 PID 未完整发布，不能查询或结束进程组");
+  const pid = Number(text);
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  return pid;
+}
+
+test("测试 PID 信号不得把空文件或零当作进程号", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-pid-test-"));
+  const file = path.join(root, "pid");
+  try {
+    for (const text of ["", "0", "-1", "NaN", "12x"]) {
+      fs.writeFileSync(file, text);
+      assert.throws(() => readTestPid(file));
+    }
+    fs.writeFileSync(file, String(process.pid));
+    assert.equal(readTestPid(file), process.pid);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("断开 /debate 取数请求会结束子进程，不继续取下一源或创建空辩论", async () => {
+  const ctx = fakeCtx();
+  const pidFile = path.join(ctx.repoRoot, "fetch.pid");
+  const script = path.join(ctx.repoRoot, ".agents", "skills", "data-access", "scripts", "fetch_endpoint.py");
+  // Publish atomically: existsSync may otherwise observe an empty file before write finishes.
+  fs.writeFileSync(script, `import os,time\np=${JSON.stringify(pidFile)}\nwith open(p+'.tmp','w') as f:\n f.write(str(os.getpid()))\nos.replace(p+'.tmp',p)\ntime.sleep(30)\n`);
+  const server = createApiServer(ctx, { token: TOKEN });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const request = http.request({ host: "127.0.0.1", port: (server.address() as { port: number }).port,
+    path: "/debate", method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } });
+  request.on("error", () => { /* 断开请求是本测试的输入 */ });
+  let pid: number | undefined;
+  try {
+    request.end(JSON.stringify({ symbol: "300308", session: "http-dossier-cancel" }));
+    await waitUntil(() => fs.existsSync(pidFile));
+    pid = readTestPid(pidFile);
+    request.destroy();
+    await waitUntil(() => { try { process.kill(pid!, 0); return false; } catch { return true; } });
+    assert.equal(getDebate("http-dossier-cancel"), null);
+    assert.equal(fs.readdirSync(path.join(ctx.dataRoot, "mcp")).length, 1, "取消后不能再开下一源取数");
+  } finally {
+    request.destroy();
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* 已退出 */ } }
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(ctx.repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("断开 /debate/advance：默认与界面 API 来源都将取消传到模型 SDK，整场可观察为中止", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-debate-http-"));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath, providerEnvKey: null };
+  const modelSignals: AbortSignal[] = [];
+  const patch = t.mock.method(Thread.prototype, "runStreamed", async (...[_input, options]: Parameters<Thread["runStreamed"]>) => {
+    const signal = options?.signal;
+    assert.ok(signal);
+    modelSignals.push(signal);
+    return { events: (async function* () {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw new Error("模拟 SDK 接收到取消");
+    })() };
+  });
+  const server = createApiServer(ctx, { token: TOKEN });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const sources = [undefined, { provider: "custom", apiKey: "synthetic-fixture", baseURL: "https://api.example.com/v1", model: "fixture" }];
+    for (const [index, llm] of sources.entries()) {
+      modelSignals.length = 0;
+      const id = `http-model-cancel-${index}`;
+      startDebateCore({ id, symbol: "300308", gaps: [],
+        envelopes: [{ script: "fixture", evidence: [{ id: "ev-fixture", field: "price", value: 1 }] }],
+        sourceFingerprint: runtimeSourceFingerprint(REPO, root, llm) });
+      const request = http.request({ host: "127.0.0.1", port: (server.address() as { port: number }).port,
+        path: `/debate/${id}/advance`, method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } });
+      request.on("error", () => { /* 断开请求是本测试的输入 */ });
+      try {
+        request.end(JSON.stringify({ ...(llm ? { llm } : {}) }));
+        await waitUntil(() => modelSignals.length === 1);
+        assert.equal(getDebate(id)?.stages[0]?.status, "running");
+        request.destroy();
+        await waitUntil(() => getDebate(id)?.done === true);
+        assert.equal(modelSignals[0]?.aborted, true);
+        assert.equal(getDebate(id)?.outcome, "cancelled");
+        assert.ok(getDebate(id)?.stages.every(stage => stage.status === "cancelled" && !stage.text));
+      } finally { request.destroy(); }
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    patch.mock.restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,stderr 脱敏,相对路径)/ 运行状态 / 报告 / 证据 / 列表 / 输入校验", async () => {
   const ctx = fakeCtx();
@@ -117,6 +309,84 @@ test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,s
   assert.ok(!red.includes("abc") && !red.includes("def") && !red.includes("sig=1") && !red.includes("sk-1") && red.includes("***"), red);
 });
 
+test("研究列表兼容真实画像 extra.name，优先证据名称且不猜测摘要", () => {
+  const ctx = fakeCtx();
+  try {
+    const p = path.join(ctx.dataRoot, "runs", "r1", "fetch", "fetch_profile.json");
+    for (const [envelope, expected] of [
+      [{ evidence: [], extra: { name: "贵州茅台" } }, "贵州茅台"],
+      [{ evidence: [{ field: "security_name", value: "中际旭创" }], extra: { name: "贵州茅台" } }, "中际旭创"],
+      [{ evidence: [], extra: { name: "bad\nname" } }, null],
+      [{ evidence: [], extra: { name: 600519 } }, null],
+      [{ evidence: [], summary: "贵州茅台" }, null],
+    ] as const) {
+      writeJson(p, envelope);
+      assert.equal(listRuns(ctx).find(r => r.run_id === "r1")?.name, expected);
+    }
+  } finally { fs.rmSync(ctx.repoRoot, { recursive: true, force: true }); }
+});
+
+test("报告与查看器只开放已结束且状态一致的运行，未校验草稿不经 HTTP 泄露且保留原件", async (t) => {
+  const ctx = fakeCtx();
+  const dir = path.join(ctx.dataRoot, "runs", "r1");
+  const manifestPath = path.join(dir, "manifest.json");
+  const original = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const draft = "UNVALIDATED_REPORT_CANARY";
+  fs.writeFileSync(path.join(dir, "report.md"), draft);
+  fs.writeFileSync(path.join(dir, "report_appendix.md"), draft);
+  fs.writeFileSync(path.join(dir, "viewer.html"), `<pre>${draft}</pre>`);
+  const server = createApiServer(ctx, { token: TOKEN });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); fs.rmSync(ctx.repoRoot, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const headers = { Authorization: `Bearer ${TOKEN}`, Cookie: `vra_token=${TOKEN}` };
+  for (const patch of [
+    { status: "running", finished_at: null },
+    { status: "failed", exit_code: 3 },
+    { cancelled: true },
+    { status: "incomplete", exit_code: 0 },
+    { status: "complete", exit_code: 2 },
+    { gate: { ok: false } },
+    { final_errors: ["report:bad numeric binding"] },
+    { final_errors: "corrupt" },
+    { finished_at: 123 },
+    null,
+  ]) {
+    if (patch === null) fs.unlinkSync(manifestPath);
+    else writeJson(manifestPath, { ...original, ...patch });
+    const report = getReport(ctx, "r1");
+    assert.equal(report.availability, "unvalidated", JSON.stringify(patch));
+    assert.equal(report.report, null); assert.equal(report.appendix, null);
+    const storedStatus = patch?.status ?? original.status;
+    if (patch !== null && !patch.cancelled && ["complete", "incomplete"].includes(storedStatus)) {
+      assert.equal(report.run_status, "unvalidated", JSON.stringify(patch));
+      assert.equal(researchStatus(ctx, "r1").status, "unvalidated", JSON.stringify(patch));
+      assert.equal(listRuns(ctx).find(r => r.run_id === "r1")?.status, "unvalidated", JSON.stringify(patch));
+    }
+    for (const route of ["/runs/r1/report", "/ui/runs/r1", "/runs/r1/viewer"]) {
+      const response = await fetch(`${base}${route}`, { headers });
+      assert.equal(response.status, route.endsWith("viewer") ? 404 : 200);
+      assert.ok(!(await response.text()).includes(draft), route);
+    }
+    assert.equal(fs.readFileSync(path.join(dir, "report.md"), "utf8"), draft);
+    assert.equal(fs.readFileSync(path.join(dir, "report_appendix.md"), "utf8"), draft);
+    assert.equal(fs.readFileSync(path.join(dir, "viewer.html"), "utf8"), `<pre>${draft}</pre>`);
+  }
+  for (const [status, exit_code] of [["complete", 0], ["incomplete", 2]] as const) {
+    writeJson(manifestPath, { ...original, status, exit_code, final_errors: [], gate: { ok: true } });
+    assert.equal(getReport(ctx, "r1").availability, "ready");
+    assert.equal(getReport(ctx, "r1").report, draft);
+    assert.equal(getReport(ctx, "r1").run_status, status);
+    assert.equal(researchStatus(ctx, "r1").status, status);
+    assert.equal(listRuns(ctx).find(r => r.run_id === "r1")?.status, status);
+    assert.equal((await fetch(`${base}/runs/r1/viewer`, { headers })).status, 200);
+  }
+  fs.unlinkSync(path.join(dir, "report.md"));
+  assert.equal(getReport(ctx, "r1").availability, "missing");
+  assert.equal(getReport(ctx, "r1").appendix, null);
+  assert.equal(getReport(ctx, "missing-run").availability, "missing");
+});
+
 test("service:符号链接穿越被拒(运行目录 / 产物文件 / session 目录)", async () => {
   const ctx = fakeCtx();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vra-outside-"));
@@ -166,13 +436,26 @@ test("service:startResearch 立即返回相对路径;子进程最小环境(resea
     (e: unknown) => e instanceof ServiceError && e.code === "unsupported_market",
     "美股没有完整必需取数链时不应空跑并消耗模型额度",
   );
-  const env = researchEnv(ctx, { PATH: "/bin", HOME: "/h", OPENAI_API_KEY: "sk-prov", VRA_SEC_CONTACT: "c", AWS_SECRET_ACCESS_KEY: "leak", GITHUB_TOKEN: "leak", CODEX_API_KEY: "leak", HTTPS_PROXY: "p" });
+  const env = researchEnv(ctx, { PATH: "/bin", HOME: "/h", OPENAI_API_KEY: "sk-prov", VRA_SEC_CONTACT: "c",
+    VRA_TASK_OBJECTIVE: "上一条请求的关注点", VRA_TASK_REPORT_IDS: "a".repeat(32),
+    VRA_TASK_REPORT_REVISIONS: JSON.stringify({ ["a".repeat(32)]: "b".repeat(64) }),
+    AWS_SECRET_ACCESS_KEY: "leak", GITHUB_TOKEN: "leak", CODEX_API_KEY: "leak", HTTPS_PROXY: "p" });
   assert.deepEqual(Object.keys(env).sort(), ["HOME", "HTTPS_PROXY", "OPENAI_API_KEY", "PATH", "VRA_SEC_CONTACT"]);
   assert.throws(() => startResearch(ctx, { symbol: "300308", market: "XX" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_market");
   assert.throws(() => startResearch(ctx, { symbol: "300308", stages: ["nope"] }), (e: unknown) => e instanceof ServiceError && e.code === "bad_stage");
   assert.throws(() => startResearch(ctx, { symbol: "300308", company_name: `中际旭创\n${"x".repeat(80)}` }), (e: unknown) => e instanceof ServiceError && e.code === "bad_company_name");
   assert.throws(() => startResearch(ctx, { symbol: "300308", run_id: "../x" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_run_id");
   assert.throws(() => startResearch(ctx, { symbol: "300308", endpoints: "all" as never }), (e: unknown) => e instanceof ServiceError && e.code === "bad_scope");
+  assert.throws(
+    () => startResearch(ctx, { symbol: "300308", engine: "direct" }),
+    (e: unknown) => e instanceof ServiceError && e.code === "experimental_engine_not_public",
+    "公开 /research 与 MCP 不能把 Direct Deep 实验适配器暴露成产品 Quick",
+  );
+  const workBuddy = startResearch(ctx, {
+    symbol: "300308", run_id: "svc-workbuddy", no_agent: true,
+    llm: { provider: "cli-codebuddy" },
+  });
+  assert.equal(workBuddy.run_id, "svc-workbuddy", "已校验的 WorkBuddy 订阅档应能进入六阶段子进程");
 });
 
 test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 415 / 路由 / 无绝对路径 / 500 脱敏", async () => {
@@ -183,6 +466,8 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
   const port = (srv.address() as { port: number }).port;
   const call = (method: string, p: string, body?: unknown, headers: Record<string, string> = {}) => new Promise<{ code: number; json: unknown; text: string }>((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port, path: p, method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}`, ...headers } }, (res) => {
+      // Decode across chunk boundaries; long Chinese responses may split one UTF-8 character.
+      res.setEncoding("utf8");
       let buf = ""; res.on("data", (c) => (buf += c)); res.on("end", () => { let j: unknown = null; try { j = JSON.parse(buf); } catch { /* text */ } resolve({ code: res.statusCode ?? 0, json: j, text: buf }); });
     });
     req.on("error", reject);
@@ -200,11 +485,24 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal((await call("GET", "/health", undefined, { Origin: "http://localhost:5173" })).code, 200);
     const agents = await call("GET", "/local-agents");
     assert.equal(agents.code, 200);
-    assert.deepEqual((agents.json as { provider: string }[]).map((x) => x.provider), ["cli-codex", "cli-claude"]);
+    assert.deepEqual((agents.json as { provider: string }[]).map((x) => x.provider), ["cli-codex", "cli-claude", "cli-codebuddy"]);
     assert.ok(!agents.text.includes(ctx.repoRoot) && !agents.text.includes(ctx.dataRoot) && !agents.text.includes("@"), "运行时探针不应回传路径或账号");
+    const selectedAgent = await call("GET", "/local-agents?provider=cli-claude");
+    assert.equal(selectedAgent.code, 200);
+    assert.deepEqual((selectedAgent.json as { provider: string }[]).map((x) => x.provider), ["cli-claude"]);
+    assert.equal((await call("GET", "/local-agents?provider=unknown")).code, 400);
     const eps = await call("GET", "/endpoints?market=US&q=yahoo");
     assert.equal(eps.code, 200);
     assert.ok((eps.json as unknown[]).length >= 1);
+    const toolsResponse = await call("GET", "/tools");
+    const toolName = (toolsResponse.json as { tools: { name: string }[] }).tools[0]?.name;
+    assert.ok(toolName, "HTTP 工具清单必须至少有一项");
+    const legacyTool = await call("POST", `/tool/${toolName}`, { action: "catalog" });
+    assert.equal(legacyTool.code, 400);
+    assert.equal((legacyTool.json as { error: string }).error, "bad_tool_request", "旧请求不能被默认为 Agent 后执行");
+    const directTool = await call("POST", `/tool/${toolName}`, { input: { action: "catalog" }, executionMode: "direct" });
+    assert.equal(directTool.code, 400);
+    assert.equal((directTool.json as { error: string }).error, "agent_required", "直连模式不能通过原始 HTTP 工具入口起脚本");
     const f = await call("POST", "/fetch", { endpoint: "em_reports", symbol: "300308", session: "api" });
     assert.equal(f.code, 200);
     assert.equal((f.json as { envelope: { status: string } }).envelope.status, "ok");
@@ -229,11 +527,39 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal(reportList.code, 200);
     assert.equal((reportList.json as unknown[]).length, 1);
     assert.ok(!reportList.text.includes(ctx.dataRoot) && !reportList.text.includes("sha256") && !reportList.text.includes("text_file"));
+    const routed = await call("POST", "/tasks", { execute: false, task: {
+      schemaVersion: 1, id: "api-task-1", kind: "locate_passages", requestedMode: "deep",
+      objective: "定位光模块需求原文", evidenceScope: "existing", workflow: "single_step",
+      inputRefs: [{ kind: "report", id: reportId }], outputFormat: "text", operation: null,
+    } });
+    assert.equal(routed.code, 200);
+    assert.equal((routed.json as { status: string }).status, "routed");
+    assert.equal((routed.json as { route: { target: string } }).route.target, "deep");
+    assert.equal((routed.json as { executionAvailable: boolean }).executionAvailable, true, "M3 Deep 已有正式执行器");
+    assert.ok(!routed.text.includes(ctx.dataRoot) && !routed.text.includes("text_file"));
+    assert.equal((await call("POST", "/tasks/resume", { runId: "missing", routeFingerprint: "0".repeat(64) })).code, 404,
+      "不存在的 Deep 绑定必须明确返回未找到，不能伪装成排队中");
     const dl = await call("GET", `/reports/${reportId}/download`);
     assert.equal(dl.code, 200); assert.equal(dl.text, reportBody.toString("utf8"));
+    const preview = await call("GET", `/reports/${reportId}/preview`);
+    assert.equal((await call("GET", `/reports/${reportId}/preview`, undefined, { Authorization: "" })).code, 401);
+    assert.equal(preview.code, 200);
+    assert.equal((preview.json as { text: string }).text, reportBody.toString("utf8"));
+    assert.equal((preview.json as { truncated: boolean }).truncated, false);
+    assert.ok(!preview.text.includes(ctx.dataRoot) && !preview.text.includes("text_file"));
+    const longUpload = await call("POST", "/reports", { name: "long-preview.txt", content: Buffer.from("正文".repeat(50_010)).toString("base64") });
+    assert.equal(longUpload.code, 200);
+    const longId = (longUpload.json as { id: string }).id;
+    const longPreview = await call("GET", `/reports/${longId}/preview`);
+    assert.equal(longPreview.code, 200);
+    assert.equal((longPreview.json as { text: string }).text.length, 100_000);
+    assert.equal((longPreview.json as { truncated: boolean }).truncated, true);
+    assert.equal((await call("POST", `/reports/${longId}/delete`, {})).code, 200);
     const del = await call("POST", `/reports/${reportId}/delete`, { id: "ffffffffffffffffffffffffffffffff" });
     assert.equal(del.code, 200); assert.deepEqual(del.json, { removed: true }, "删除必须认 URL 里的 id，不能被请求体覆盖");
     assert.equal(((await call("GET", "/reports")).json as unknown[]).length, 0);
+    assert.equal((await call("GET", `/reports/${reportId}/preview`)).code, 404);
+    assert.equal((await call("GET", "/reports/..%2Fsecret/preview")).code, 400);
     assert.equal((await call("GET", "/nope")).code, 404);
     // 薄 UI:/login 用 token 换 Cookie;Cookie 只对只读 GET 有效;POST 仍只认 Bearer
     const login = await new Promise<{ code: number; cookie: string; loc: string }>((resolve, reject) => {
@@ -310,9 +636,21 @@ test("MCP:stdio 起真实 server(SDK Client),tools/list 含 8 个工具,list_end
     assert.equal(bad.isError, true);
     const badText = (bad.content as { text: string }[])[0].text;
     assert.ok(!badText.includes("abc123") && badText.includes("bad_symbol") && !badText.includes(ctx.dataRoot), badText);
+    const directRun = "mcp-direct-must-reject";
+    const direct = await client.callTool({ name: "start_research", arguments: {
+      symbol: "300308", engine: "direct", run_id: directRun, no_agent: true,
+      stages: ["profile"], endpoints: "core", knowledge: "off",
+    } });
+    assert.equal(direct.isError, true, "MCP 不能先剥掉 engine=direct 再静默启动默认 Codex Deep");
+    assert.equal(fs.existsSync(path.join(ctx.dataRoot, "runs", directRun)), false, "被拒请求不能留下研究运行");
     const st = await client.callTool({ name: "research_status", arguments: { run_id: "r1" } });
     const stText = (st.content as { text: string }[])[0].text;
     assert.equal(JSON.parse(stText).status, "complete"); assert.ok(!stText.includes(ctx.dataRoot));
+    writeJson(path.join(ctx.dataRoot, "runs", "r1", "manifest.json"), { status: "running", stages: [] });
+    const draft = await client.callTool({ name: "get_report", arguments: { run_id: "r1" } });
+    const payload = JSON.parse((draft.content as { text: string }[])[0].text);
+    assert.equal(payload.availability, "unvalidated");
+    assert.equal(payload.report, null); assert.equal(payload.appendix, null);
   } finally { await client.close(); }
 });
 
@@ -392,6 +730,7 @@ test("运行产物的 HTML 以 CSP 送出 —— 产物里混进 <script> 时不
   const runDir = path.join(ctx.dataRoot, "runs", "r1");
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, "viewer.html"), "<html><body>hi</body></html>");
+  writeJson(path.join(runDir, "manifest.json"), { status: "complete", exit_code: 0, finished_at: "2026-09-05T12:00:00+08:00" });
   const server = createApiServer(ctx, { token: "t-test-token-0123456789" });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
@@ -401,6 +740,9 @@ test("运行产物的 HTML 以 CSP 送出 —— 产物里混进 <script> 时不
     const csp = r.headers.get("content-security-policy") ?? "";
     assert.match(csp, /default-src 'none'/, "HTML 响应必须带 CSP");
     assert.match(csp, /sandbox/);
+    assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+'/);
+    assert.match(csp, /sandbox allow-scripts(?:;|$)/);
+    assert.doesNotMatch(csp, /allow-same-origin|script-src 'unsafe-inline'/);
     // JSON 响应不需要 CSP(带上只是噪音)
     const j = await fetch(`http://127.0.0.1:${port}/runs`, { headers: { authorization: "Bearer t-test-token-0123456789" } });
     assert.equal(j.headers.get("content-security-policy"), null);
@@ -430,6 +772,31 @@ test("🔴 同一份查询并发进来只真取一次(single-flight)—— 否�
     process.env.PATH = orig;
     void spawned;
   }
+});
+
+test("single-flight 取消只影响该订阅者;全部取消后可立即重试", async () => {
+  const ctx = fakeCtx();
+  const script = path.join(ctx.repoRoot, ".agents/skills/data-access/scripts/fetch_endpoint.py");
+  fs.writeFileSync(script, "import time\ntime.sleep(0.25)\n" + fs.readFileSync(script, "utf8"));
+  const req = { endpoint: "tx_quotes_batch", args: { codes: ["300308"] }, consistency: { mode: "fresh" as const } };
+  try {
+    for (const cancelledIndex of [0, 1]) {
+      const controllers = [new AbortController(), new AbortController()];
+      const promises = controllers.map(c => fetchEndpoint(ctx, { ...req, signal: c.signal }));
+      const rejected = assert.rejects(promises[cancelledIndex], (e: unknown) => e instanceof ServiceError && e.code === "cancelled");
+      controllers[cancelledIndex].abort();
+      await rejected;
+      // 广州假取数器对该端点返回 partial / exit 2，仍须独立完成。
+      assert.equal((await promises[1 - cancelledIndex]).exit_code, 2);
+    }
+    const a = new AbortController(), b = new AbortController();
+    const pa = fetchEndpoint(ctx, { ...req, signal: a.signal }), pb = fetchEndpoint(ctx, { ...req, signal: b.signal });
+    const settled = Promise.allSettled([pa, pb]);
+    a.abort(); b.abort();
+    const fresh = fetchEndpoint(ctx, req);
+    assert.ok((await settled).every(r => r.status === "rejected"));
+    assert.equal((await fresh).exit_code, 2, "旧任务收尾不能删除或取消新任务");
+  } finally { fs.rmSync(ctx.repoRoot, { recursive: true, force: true }); }
 });
 
 test("🔴 cache_only 没快照就报错,绝不偷偷联网", async () => {
@@ -505,12 +872,186 @@ test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可�
   fs.rmSync(ctx.dataRoot, { recursive: true, force: true });
 });
 
+test("普通对话通过所选 Codex 订阅或 Responses 来源实际到达无工具内核", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-light-service-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath, providerEnvKey: null };
+  let calls = 0;
+  t.mock.method(Thread.prototype, "runStreamed", async (input: string) => {
+    calls++;
+    assert.doesNotMatch(input, /使用本轮实际提供的工具主动完成请求|list_endpoints/);
+    return { events: (async function* () { yield { type: "item.completed", item: { type: "agent_message", text: "普通对话回答" } }; })() };
+  });
+  for (const llm of [{ provider: "cli-codex" }, { provider: "openai-compatible", baseURL: "https://responses.invalid/v1", apiKey: "synthetic-key", model: "test" }]) {
+    const out = await chatSend(ctx, { message: "你好", llm, executionMode: "direct" });
+    assert.equal(out.reply, "普通对话回答");
+    assert.deepEqual(out.pending_research, []);
+    assert.equal(out.tool_activity, undefined);
+  }
+  assert.equal(calls, 2);
+  await assert.rejects(chatSend(ctx, { message: "你好", executionMode: "direct", llm: { provider: "cli-unknown" } }),
+    (e: unknown) => e instanceof ServiceError && e.code === "unsupported_cli");
+  assert.equal(calls, 2, "未知来源不可进入兜底运行");
+});
+
+test("全局 direct 模式让普通对话与标题翻译走同一份已验证 API，不启动 Agent", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-service-"));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null };
+  const calls: { url: string; auth: string; body: Record<string, unknown> }[] = [];
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    calls.push({
+      url: String(input),
+      auth: String(new Headers(init?.headers).get("authorization") ?? ""),
+      body,
+    });
+    const messages = body.messages as { content?: string }[];
+    const translating = String(messages?.[0]?.content ?? "").includes("只能翻译新闻标题");
+    const content = translating
+      ? JSON.stringify({ items: [{ id: "h1", zh: "人工智能公司发布新模型" }] })
+      : "这是一次不使用工具的直接回答。";
+    return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const llm = { provider: "mimo", baseURL: "https://direct.invalid/v1", apiKey: "test-direct-key", model: "mimo-v2.5" };
+  try {
+    const chat = await chatSend(ctx, { session: "direct-chat", message: "解释这个概念", llm, executionMode: "direct" });
+    assert.equal(chat.reply, "这是一次不使用工具的直接回答。");
+    assert.equal(chat.report_sources.length, 0);
+
+    const translated = await translateHeadlines(ctx, {
+      items: [{ id: "h1", title: "AI company releases a new model" }], llm, executionMode: "direct",
+    });
+    assert.deepEqual(translated.items, [{ id: "h1", zh: "人工智能公司发布新模型" }]);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((x) => x.url === "https://direct.invalid/v1/chat/completions"));
+    assert.ok(calls.every((x) => x.auth === "Bearer test-direct-key"));
+    assert.equal(calls[0]?.body.tools, undefined, "直连对话不能偷偷启动 Agent 工具循环");
+    assert.ok(calls[1]?.body.response_format, "已验证的结构化直连翻译必须把 schema 发给 provider");
+  } finally {
+    globalThis.fetch = oldFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("🔴 直连资料问答只接受本轮真实 id 与页码", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-citation-"));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null };
+  const report = await addReport(root, { name: "独特收入变化.md", content: Buffer.from("独特收入变化的原文。", "utf8").toString("base64") });
+  const oldFetch = globalThis.fetch;
+  let reply = `伪造引用 [资料:${"b".repeat(32)} p.-]`;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    choices: [{ message: { role: "assistant", content: reply }, finish_reason: "stop" }],
+  }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  const llm = { provider: "mimo", baseURL: "https://direct.invalid/v1", apiKey: "test-direct-key", model: "mimo-v2.5" };
+  try {
+    await assert.rejects(
+      () => chatSend(ctx, { message: "请根据独特收入变化报告回答", llm, executionMode: "direct" }),
+      (error: unknown) => error instanceof ServiceError && error.code === "report_citation_invalid",
+    );
+    reply = `真实引用 [资料:${report.id} p.-]`;
+    const ok = await chatSend(ctx, { message: "请根据独特收入变化报告回答", llm, executionMode: "direct" });
+    assert.deepEqual(ok.report_sources, [{ id: report.id, name: report.name, page: null }]);
+  } finally {
+    globalThis.fetch = oldFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("全局 direct 模式在任何副作用前拒绝需要 Agent 的能力", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-boundary-"));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null };
+  const isAgentRequired = (error: unknown) => error instanceof ServiceError && error.code === "agent_required";
+  try {
+    assert.throws(
+      () => startResearch(ctx, { symbol: "300308", executionMode: "direct" }),
+      isAgentRequired,
+      "六阶段研究必须在建运行目录前拒绝",
+    );
+    await assert.rejects(
+      () => debateStart(ctx, { symbol: "300308", executionMode: "direct" }),
+      isAgentRequired,
+      "多空辩论必须在拉取资料包前拒绝",
+    );
+    await assert.rejects(
+      () => ingestFiles(ctx, { kind: "position", files: [], executionMode: "direct" }),
+      isAgentRequired,
+      "资料转写必须在读取文件前拒绝",
+    );
+    const tool = listTools()[0]?.name;
+    assert.ok(tool, "金融插件必须至少声明一个对话式工具");
+    await assert.rejects(
+      () => runToolRequest(ctx, tool, { fn: "legacy-body" }),
+      (error: unknown) => error instanceof ServiceError && error.code === "bad_tool_request",
+      "旧工具请求不能被默认为 Agent 后继续执行",
+    );
+    await assert.rejects(
+      () => runToolRequest(ctx, tool, { input: {}, executionMode: "direct" }),
+      isAgentRequired,
+      "原始工具 HTTP 入口也必须在起脚本前拒绝直连模式",
+    );
+    await assert.rejects(
+      () => guidedToolTurn(ctx, tool, { message: "开始", executionMode: "direct" }),
+      isAgentRequired,
+      "需要工具的任务必须在模型或工具调用前拒绝",
+    );
+    const calc = await runToolRequest(ctx, "calc", {
+      input: { fn: "forward_pe", args: { price: 100, eps_forecast: 5 } },
+      executionMode: "direct",
+    }) as { ok?: boolean; result?: { value?: number } };
+    assert.equal(calc.ok, true, "不联网、不落盘的确定性计算在直连模式下仍应可用");
+    assert.equal(calc.result?.value, 20);
+    assert.deepEqual(fs.readdirSync(root), [], "被拒绝的直连请求不能留下运行产物");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude / CodeBuddy 业务入口保留参数与模式门控，不再因来源一律拒绝", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-claude-boundary-"));
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null };
+  const code = (expected: string) => (error: unknown) => error instanceof ServiceError && error.code === expected;
+  const tool = listTools()[0]?.name;
+  assert.ok(tool, "金融插件必须至少声明一个工具");
+  try {
+    for (const llm of [{ provider: "cli-claude" }, { provider: "cli-codebuddy" }]) {
+    await assert.rejects(
+      () => debateStart(ctx, { symbol: "../invalid", llm, executionMode: "agent" }),
+      code("bad_symbol"),
+      "辩论必须在拉取资料包前校验标的",
+    );
+    await assert.rejects(
+      () => ingestFiles(ctx, { kind: "position", files: [], llm, executionMode: "agent" }),
+      code("no_files"),
+      "转写必须在读取文件前校验上传清单",
+    );
+    await assert.rejects(
+      () => runToolRequest(ctx, tool, { input: {}, llm, executionMode: "direct" }),
+      code("agent_required"),
+      "来源不改变全局 Agent 开关约束",
+    );
+    await assert.rejects(
+      () => guidedToolTurn(ctx, tool, { message: "开始", llm, executionMode: "agent" }),
+      code("bad_session"),
+      "对话式工具必须在模型或工具调用前校验会话",
+    );
+    }
+    assert.deepEqual(fs.readdirSync(root), [], "被拒绝的 Claude 请求不能留下运行产物");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("浏览器断开 /chat 后，API 会把取消信号传到底层并结束本机 Claude 进程", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-api-abort-"));
   const pidFile = path.join(root, "claude.pid");
   const bin = fakeNodeExecutable(root, "claude", `
 const fs=require('node:fs');
-fs.writeFileSync(process.env.TEST_CLAUDE_PID,String(process.pid));
+fs.writeFileSync(${JSON.stringify(pidFile)}+'.tmp',String(process.pid));
+fs.renameSync(${JSON.stringify(pidFile)}+'.tmp',${JSON.stringify(pidFile)});
 setInterval(()=>{},1000);
 `);
   const ctx: ServiceContext = {
@@ -519,9 +1060,7 @@ setInterval(()=>{},1000);
   };
   fs.mkdirSync(ctx.dataRoot, { recursive: true });
   const oldBin = process.env.CLAUDE_BIN;
-  const oldPid = process.env.TEST_CLAUDE_PID;
   process.env.CLAUDE_BIN = bin;
-  process.env.TEST_CLAUDE_PID = pidFile;
   const server = createApiServer(ctx, { token: TOKEN });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -539,7 +1078,7 @@ setInterval(()=>{},1000);
     }
     if (!fs.existsSync(pidFile)) request.destroy();
     assert.ok(fs.existsSync(pidFile), "假 Claude 必须真的启动，才能证明取消链路");
-    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    const pid = readTestPid(pidFile);
     request.destroy();
     for (let i = 0; i < 100; i += 1) {
       try { process.kill(pid, 0); } catch { break; }
@@ -549,7 +1088,6 @@ setInterval(()=>{},1000);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (oldBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = oldBin;
-    if (oldPid === undefined) delete process.env.TEST_CLAUDE_PID; else process.env.TEST_CLAUDE_PID = oldPid;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

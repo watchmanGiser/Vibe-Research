@@ -8,9 +8,30 @@
 
 | 上游 | 移植自 | 上次核对 | 上游当时最新 | 结论 |
 |---|---|---|---|---|
-| [a-stock-data](https://github.com/simonlin1212/a-stock-data) | **v3.7.0** | 2026-08-24 | v3.7.1 | 见下 ①,**无需跟进** |
-| [global-stock-data](https://github.com/simonlin1212/global-stock-data) | **v2.0.3** | 2026-08-24 | v2.0.3 | 已对齐 |
-| [investment-news](https://github.com/simonlin1212/investment-news) | 源清单(`sources.json`) | 2026-08-24 | v1.0.3 | 见下 ②,**不适用** |
+| [a-stock-data](https://github.com/simonlin1212/a-stock-data) | **v3.7.0** | 2026-09-07 | v3.8.0 | 已读发布说明与变更；新增能力未整体移植，见 ③ |
+| [global-stock-data](https://github.com/simonlin1212/global-stock-data) | **v2.0.3** | 2026-09-07 | v2.0.3 | 发布版本未变；沿用既有移植，不声称全部端点重新实连 |
+| [investment-news](https://github.com/simonlin1212/investment-news) | 源清单(`sources.json`) | 2026-09-07 | v1.0.3 | 发布版本未变；抓取器修复适用性见 ② |
+
+## ③ M37 发布候选对账（2026-09-07）
+
+已实时读取三个官方仓库的 latest Release，以及 a-stock-data 的 CHANGELOG。
+[a-stock-data v3.8.0](https://github.com/simonlin1212/a-stock-data/releases/tag/v3.8.0)
+新增指数成分、权重、估值和交易所数据入口；这些属于能力扩充，不是现有 Research 端点依赖升级，
+本轮不把新端点数量写入产品承诺，也不整包覆盖产品已修复的数据层。
+
+其中 v3.7.2 将北交所宽号段判断统一为 4/8/92；产品现有 `natural_market` 为
+43/83/87/92（现行北交所股票号段的既有覆盖），不是逐字同步后的宽号段实现。
+未新增对其他 4/8 开头证券的支持；上游新增接口和宽号段支持仍作为后续扩展项，不能称“全量对齐 v3.8.0”。
+v3.7.1 后缀归一化修复的产品路径对照仍见 ①。
+
+[global-stock-data v2.0.3](https://github.com/simonlin1212/global-stock-data/releases/tag/v2.0.3)
+与 [investment-news v1.0.3](https://github.com/simonlin1212/investment-news/releases/tag/v1.0.3)
+未出现更新发布；下方源清单逐键一致性是 8 月 24 日历史证据，不冒称本次全量重新抓取。
+
+Research 自身公开 main 本次只读核对为 `09e8404a33ba0d05e036e01207be4701c61d692c`。
+开放 PR #45 的损坏计算记录问题，本地已有显式校验与错误回报；不采用静默跳过坏记录的简化修法。
+PR #47 的 Markdown/引用展示，本地已有 GFM 与精确证据定位；其归档删除接口未合入。
+这不是对全部开放 PR 的接受或审结，也未发生合并、推送或发布。
 
 ## ① a-stock-data v3.7.1 的 `get_prefix()` 路由 bug:本产品**架构上不适用**
 

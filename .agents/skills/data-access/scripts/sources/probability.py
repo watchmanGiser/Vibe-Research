@@ -33,7 +33,9 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -52,6 +54,11 @@ REFERENCE_MODULES = ("加密", "体育", "娱乐", "其他")
 #: 每个模块最多留几条(按 max(24h 成交量, 未平仓量) 排序)。比上游面板紧得多 —— 报告不是看板,
 #: 每模块 3 条已足够做参照,再多只会把报告压垮(而"提示词越长章节掉得越多"是本产品实测过的)。
 PER_MODULE = 3
+# Sequential sources each get a cooperative budget, leaving headroom under the
+# orchestrator's 180s process limit. Socket stalls are bounded separately; DNS
+# resolution still relies on the outer process timeout, not this deadline.
+SOURCE_BUDGET_SECONDS = 65.0
+_source_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("macro_source_deadline", default=None)
 #: 结算期限上限。实测 Kalshi 上有 close_time=2099 的合约,2036 年的 GDP / CPI 合约成交量为 0 ——
 #: 拿它当"市场对宏观的预期"是误导。
 #: ⚠️ 但**纯日期窗口会误杀真正有意义的远期合约**:实测宏观类(衰退 / CPI / GDP)在两个源上
@@ -152,9 +159,26 @@ class ProbabilityError(RuntimeError):
 
 def _get(url: str, params: dict, timeout: int = 25) -> bytes:
     """只取原始字节 —— 解析在调用方,坏 JSON 那份响应也要能落盘留证。"""
+    deadline = _source_deadline.get()
+    def remaining() -> float:
+        left = deadline - time.monotonic() if deadline is not None else float(timeout)
+        if left <= 0:
+            raise TimeoutError("本源取数时间预算已用尽，未查完的部分保持未知")
+        return left
+
     q = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(q, headers={"User-Agent": UA, "Accept": "application/json"})
-    return urllib.request.urlopen(req, timeout=timeout).read()
+    # read1 does at most one buffered read: a slow trickle cannot keep one read()
+    # alive indefinitely without giving us a chance to check the budget again.
+    with urllib.request.urlopen(req, timeout=min(float(timeout), 10.0, remaining())) as response:
+        chunks = []
+        while True:
+            remaining()
+            chunk = response.read1(64 * 1024)
+            remaining()
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
 
 
 def _f(v) -> Optional[float]:
@@ -304,7 +328,8 @@ def _kalshi_macro_series(warns: Optional[list] = None) -> tuple[list, Optional[s
     page_truncated = False
     for cat in KALSHI_MACRO_CATEGORIES:
         body = _get(KALSHI_SERIES, {"limit": "1000", "category": cat})
-        raw_ref = raw_ref or record_raw(body, "json", KALSHI_SERIES)
+        page_ref = record_raw(body, "json", KALSHI_SERIES)
+        raw_ref = raw_ref or page_ref
         data = json.loads(body)
         if not isinstance(data, dict) or not isinstance(data.get("series"), list):
             raise ProbabilityError(f"Kalshi /series({cat}) 响应缺 series 数组(结构变了)")
@@ -345,13 +370,20 @@ def _kalshi(today: str, dropped: dict) -> tuple[list, list, Optional[str], bool]
         params = {"limit": "200", "status": "open", "with_nested_markets": "true"}
         if cursor:
             params["cursor"] = cursor
-        body, fetched = _get_stamped(KALSHI_EVENTS, params)
-        page_ref = record_raw(body, "json", KALSHI_EVENTS)   # 每页各自的 raw,证据要挂到对的那一份
-        raw_ref = raw_ref or page_ref
-        data = json.loads(body)
-        evs = data.get("events") if isinstance(data, dict) else None
-        if not isinstance(evs, list):
-            raise ProbabilityError("Kalshi 响应缺 events 数组(结构变了)")
+        try:
+            body, fetched = _get_stamped(KALSHI_EVENTS, params)
+            page_ref = record_raw(body, "json", KALSHI_EVENTS)
+            raw_ref = raw_ref or page_ref
+            data = json.loads(body)
+            evs = data.get("events") if isinstance(data, dict) else None
+            if not isinstance(evs, list):
+                raise ProbabilityError("Kalshi 响应缺 events 数组(结构变了)")
+        except Exception as e:  # preserve earlier parsed pages, never claim full coverage
+            if _page == 0:
+                raise
+            warns.append(f"Kalshi 广度取数失败，保留已取得页面，后续范围未知:{type(e).__name__}: {str(e)[:100]}")
+            complete = False
+            break
         _kalshi_shape(evs, today, dropped, out, page_ref, fetched)
         cursor = str(data.get("cursor") or "") if isinstance(data, dict) else ""
         if not cursor:
@@ -381,7 +413,7 @@ def _kalshi(today: str, dropped: dict) -> tuple[list, list, Optional[str], bool]
     except Exception as e:  # noqa: BLE001 — 定向失败不该拖垮广度已拿到的部分,但必须出声
         warns.append(f"Kalshi 宏观系列定向取数失败(广度采样仍在,但宏观经济模块可能因此空缺):{type(e).__name__}: {str(e)[:100]}")
         complete = False
-    if not out:
+    if not out and complete:
         # 这条是**结论**不是覆盖受限,不熄灭 complete
         warns.append("Kalshi 开放事件里没有落入 6 个核心模块的合约(不是故障)")
     return out, warns, raw_ref, complete
@@ -492,12 +524,19 @@ def _polymarket(today: str, dropped: dict) -> tuple[list, list, Optional[str], b
     for page in range(POLY_PAGES):
         params = {"active": "true", "closed": "false", "limit": "100",
                   "offset": str(page * 100), "order": "volume24hr", "ascending": "false"}
-        body, fetched = _get_stamped(POLY_MARKETS, params)
-        page_ref = record_raw(body, "json", POLY_MARKETS)
-        raw_ref = raw_ref or page_ref
-        data = json.loads(body)
-        if not isinstance(data, list):
-            raise ProbabilityError("Polymarket 响应不是数组(结构变了)")
+        try:
+            body, fetched = _get_stamped(POLY_MARKETS, params)
+            page_ref = record_raw(body, "json", POLY_MARKETS)
+            raw_ref = raw_ref or page_ref
+            data = json.loads(body)
+            if not isinstance(data, list):
+                raise ProbabilityError("Polymarket 响应不是数组(结构变了)")
+        except Exception as e:  # preserve earlier parsed pages, never claim full coverage
+            if page == 0:
+                raise
+            warns.append(f"Polymarket 广度取数失败，保留已取得页面，后续范围未知:{type(e).__name__}: {str(e)[:100]}")
+            complete = False
+            break
         if not data:
             break
         full_pages = page + 1 if len(data) >= 100 else full_pages
@@ -522,7 +561,7 @@ def _polymarket(today: str, dropped: dict) -> tuple[list, list, Optional[str], b
     except Exception as e:  # noqa: BLE001
         warns.append(f"Polymarket 宏观标签定向取数失败(广度采样仍在):{type(e).__name__}: {str(e)[:100]}")
         complete = False
-    if not out:
+    if not out and complete:
         warns.append("Polymarket 活跃市场里没有落入 6 个核心模块的合约(不是故障)")
     return out, warns, raw_ref, complete
 
@@ -548,6 +587,7 @@ def macro_probability(now: Optional[datetime] = None) -> dict:
     ok_names: list = []
     partial_names: list = []
     for name, fn in (("kalshi", _kalshi), ("polymarket", _polymarket)):
+        budget_token = _source_deadline.set(time.monotonic() + SOURCE_BUDGET_SECONDS)
         try:
             got, w, ref, complete = fn(today, dropped)
             items.extend(got)
@@ -559,6 +599,8 @@ def macro_probability(now: Optional[datetime] = None) -> dict:
             (ok_names if complete else partial_names).append(name)           # 🔴 "成功但没有符合条件的合约" 也是成功
         except Exception as e:  # noqa: BLE001 — 逐源隔离
             errors.append(f"{name}: {type(e).__name__}: {str(e)[:140]}")
+        finally:
+            _source_deadline.reset(budget_token)
     if ok_sources == 0:
         # 判据是**成功的源数**,不是"有没有 item"。原先写 `not items and errors`:
         # 一个源报错、另一个源成功但当前没有符合条件的合约,会报"两个源都失败" —— 那是个假事实

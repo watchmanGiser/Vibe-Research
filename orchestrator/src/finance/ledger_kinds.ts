@@ -58,6 +58,20 @@ export const FINANCE_ENUM_LABELS: Record<string, string> = {
 };
 
 export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
+  /** 用户手动记录已发生的清仓，不下单、不自动扣减另一张持有台账。 */
+  closed_position: {
+    label: "清仓记录",
+    properties: {
+      symbol: REQUIRED_SYMBOL,
+      name: TEXT(40),
+      closed_at: { type: "string", format: "date" },
+      note: TEXT(1000),
+      price: { type: "number", exclusiveMinimum: 0 },
+      shares: { type: "number", exclusiveMinimum: 0 },
+      cost: { type: "number" },
+    },
+    required: ["symbol", "closed_at", "price", "shares", "cost"],
+  },
   /** 持有记录:成本与数量是用户自己的事实,产品不猜也不改 */
   position: {
     label: "持有",

@@ -68,7 +68,7 @@ class Result:
         bench = self.metrics.get("benchmark_return")
         if isinstance(bench, (int, float)):
             ticker = self.metrics.get("benchmark_ticker")
-            what = f"指数 {ticker}" if ticker else "等权买入持有这几只标的本身（不是指数）"
+            what = f"指数 {ticker}" if ticker else "初始等权持有这几只标的本身（不是指数；无再平衡、不计费用；缺报价沿用前值，首笔报价前留现金）"
             lines.append(f"  对照 {bench * 100:.2f}%    ← {what}")
         if self.missing:
             lines += ["", "取不到数据（未参与回测）："] + [f"  · {c}：{why}" for c, why in self.missing.items()]
@@ -172,10 +172,19 @@ def run(plan: Plan | Refusal, strategy: Strategy, run_dir: Optional[Path] = None
     engine = engine_cls(config)
 
     guarded = _Guarded(strategy, plan)
-    metrics = engine.run_backtest(
-        config=config, loader=loader, signal_engine=guarded,
-        run_dir=run_dir, bars_per_year=BARS_PER_YEAR,
-    )
+    try:
+        metrics = engine.run_backtest(
+            config=config, loader=loader, signal_engine=guarded,
+            run_dir=run_dir, bars_per_year=BARS_PER_YEAR,
+        )
+    except BacktestNotValid as exc:
+        failed = {c: why for c, why in loader.failures.items() if c in plan.codes}
+        if not failed:
+            raise
+        # 守卫只看取回的样本；部分标的没取到时，不能只用其余标的的样本
+        # 不足来给整个计划下「不成立」的结论。保留两类原因，作为数据错误。
+        details = "；".join(f"{c}：{why}" for c, why in failed.items())
+        raise RuntimeError(f"回测数据不完整（{details}）；已取得样本的限制：{exc}") from exc
 
     # 取不到的票**要说出来**。引擎那边只是把它们从 data_map 里漏掉，
     # 结果照样算得出来 —— 读的人会以为三只票都在里面，其实只跑了两只。

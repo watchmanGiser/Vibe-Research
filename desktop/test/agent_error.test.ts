@@ -3,6 +3,31 @@ import test from "node:test";
 
 import { ApiError, backend, friendlyAgentError } from "../src/verticals/finance/lib/backend.ts";
 
+test("未接入 AI 仍可调用确定性工具，并传递取消信号", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => null } });
+  const signal = new AbortController().signal;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls++;
+    assert.equal(String(input), "/api/tool/calc");
+    assert.equal(init?.signal, signal);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.executionMode, "direct");
+    assert.equal(body.llm, undefined);
+    return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    assert.deepEqual(await backend.runTool("calc", { function: "peg" }, signal), { ok: true });
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
 test("Agent 认证失败只显示可行动的中文提示，不暴露重连地址与鉴权原文", () => {
   const raw = new ApiError(
     "Reconnecting... 2/5 (unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: secret)",
@@ -16,11 +41,15 @@ test("Agent 认证失败只显示可行动的中文提示，不暴露重连地�
 
 test("选中的本地 Agent 不可用时先拦住，不再发起对话请求", async () => {
   const oldFetch = globalThis.fetch;
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => JSON.stringify({
+    schemaVersion: 2, modePreferenceVersion: 1, executionMode: "agent", source: { provider: "cli-codex" },
+  }) } });
   const paths: string[] = [];
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
     paths.push(url);
-    if (url === "/api/local-agents") {
+    if (url === "/api/local-agents?provider=cli-codex") {
       return new Response(JSON.stringify([{
         provider: "cli-codex", name: "Codex", installed: true, authenticated: false,
         available: false, version: "0.149.0", status: "not_authenticated", detail: "尚未登录",
@@ -34,10 +63,18 @@ test("选中的本地 Agent 不可用时先拦住，不再发起对话请求", a
       (e: unknown) => e instanceof ApiError && e.code === "agent_not_ready"
         && e.message.includes("接入 AI"),
     );
-    assert.deepEqual(paths, ["/api/local-agents"], "不可用时只做状态探针，不调用 /chat");
+    assert.deepEqual(paths, ["/api/local-agents?provider=cli-codex"], "只检测所选来源，不等待其他来源，也不调用 /chat");
   } finally {
     globalThis.fetch = oldFetch;
+    if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
+});
+
+test("检测失败与未安装不再被误报成登录失效", () => {
+  assert.match(friendlyAgentError(new ApiError("opaque secret diagnostic", 409, "agent_probe_failed")), /检测未完成/);
+  assert.doesNotMatch(friendlyAgentError(new ApiError("opaque secret diagnostic", 409, "agent_probe_failed")), /secret|登录已失效/);
+  assert.match(friendlyAgentError(new ApiError("当前选择的 Claude 尚未安装。请先到「接入 AI」完成连接。", 409, "agent_not_installed")), /尚未安装/);
 });
 
 test("Agent 端点返回非 JSON 错误页时也不回显底层正文", async () => {
@@ -50,7 +87,7 @@ test("Agent 端点返回非 JSON 错误页时也不回显底层正文", async ()
     await assert.rejects(
       () => backend.chat("复盘今天", "daily-review", undefined, { provider: "deepseek", apiKey: "k" }),
       (e: unknown) => e instanceof ApiError
-        && e.message === "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
+        && e.message === "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
         && !/wss?:\/\/|cf-ray|Reconnecting|502 upstream/i.test(e.message),
     );
   } finally {
@@ -85,7 +122,8 @@ test("Agent 未知 JSON 错误也默认收口，不把内部诊断原文交给�
     await assert.rejects(
       () => backend.chat("复盘今天", "daily-review", undefined, { provider: "deepseek", apiKey: "k" }),
       (e: unknown) => e instanceof ApiError
-        && e.message === "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
+        && e.code === "turn_failed"
+        && e.message === "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
         && !/opaque|diagnostic|secret-value/i.test(e.message),
     );
   } finally {

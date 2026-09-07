@@ -184,6 +184,12 @@ test("manifest schema 认得 seeded_from(加了 TS 类型却忘了 schema,整次
   assert.doesNotMatch(err({ seeded_from: null }), /seeded_from/);   // 非播种运行显式为 null 也合法
 });
 
+test("Deep 允许的 16 份圈选资料与 manifest 上限一致", () => {
+  const schema = manifestSchema() as unknown as { properties: { user_reports: { maxItems: number } } };
+  assert.equal(schema.properties.user_reports.maxItems, 16,
+    "任务层允许 16 份，但 manifest 若仍只允许 5 份，真实运行会在最终校验才失败");
+});
+
 test("🔴 createFixture 的输出目录不得与来源运行目录相同或互相包含(否则会先删掉来源)", () => {
   const run = mkRun();
   assert.throws(() => createFixture(run, run, { stages: SEEDED, symbol: "000001", market: "SZ", runId: "r-1" }), /不得相同或互相包含/);

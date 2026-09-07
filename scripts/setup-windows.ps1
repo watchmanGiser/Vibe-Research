@@ -30,9 +30,9 @@ if ($LASTEXITCODE -ne 0) { throw "Vibe Research 需要 Python 3.11 或更高版�
 Assert-NativeSuccess "升级 pip"
 & $venvPython -m pip install -r ".agents\skills\data-access\scripts\requirements.txt"
 Assert-NativeSuccess "安装 Python 依赖"
-& npm ci --prefix orchestrator
+& npm ci --prefix orchestrator --no-audit --no-fund
 Assert-NativeSuccess "安装 orchestrator 依赖"
-& npm ci --prefix desktop
+& npm ci --prefix desktop --no-audit --no-fund
 Assert-NativeSuccess "安装 desktop 依赖"
 & node (Join-Path $root "orchestrator\src\init.ts") --python $venvPython
 Assert-NativeSuccess "初始化产品目录"

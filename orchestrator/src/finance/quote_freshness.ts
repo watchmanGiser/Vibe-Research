@@ -11,8 +11,8 @@ export function financeQuoteDecision(run: RunView): { decision: QuoteDecision; r
   const cal = run.fetch["fetch_trade_calendar"];
   if (!q || q.status === "failed") return { decision: "missing", reason: "fetch_quote 缺失或失败" };
   if (!cal || cal.status === "failed") return { decision: "unknown_unverified", reason: "缺少交易日历,无法判定报价时效" };
-  const qx = q.extra as Record<string, unknown>;
-  const cx = cal.extra as Record<string, unknown>;
+  const qx = (q.extra ?? {}) as Record<string, unknown>;
+  const cx = (cal.extra ?? {}) as Record<string, unknown>;
   const quoteDate = String(qx.quote_date ?? "");
   const ref = String(cx.reference_quote_day ?? "");
   const last = String(cx.last_trading_day ?? "");
@@ -26,11 +26,13 @@ export function financeQuoteDecision(run: RunView): { decision: QuoteDecision; r
     if (preOpenOk) return { decision: "pre_open", reason: `盘前(session_phase=pre_open)且 quote_date ${quoteDate} 吻合,按昨收继续` };
     return { decision: "stale", reason: "成交额 0 且现价 == 昨收,且非盘前:停牌 / 废码" };
   }
-  if (stale === "unknown") {
+  if (stale !== false) {
     const k = run.fetch["fetch_kline"];
     const kx = (k?.extra ?? {}) as Record<string, unknown>;
-    if (k && k.status !== "failed" && String(kx.end ?? "") === ref) return { decision: "normal", reason: "is_stale=unknown,K 线最新日期 == 参考日,二次验证通过" };
-    return { decision: "unknown_unverified", reason: "is_stale=unknown 且无法用 K 线二次验证" };
+    const traded = k?.evidence.some(e => e.field === "volume_latest" && e.period === ref &&
+      typeof e.value === "number" && Number.isFinite(e.value) && e.value > 0);
+    if (k && k.status !== "failed" && String(kx.end ?? "") === ref && traded) return { decision: "normal", reason: "报价时效未知,K 线最新日期 == 参考日且成交量为正,二次验证通过" };
+    return { decision: "unknown_unverified", reason: "报价时效未知,K 线日期或正成交量证据不足,无法二次验证" };
   }
   return { decision: "normal", reason: `quote_date ${quoteDate} == reference_quote_day ${ref},is_stale=false` };
 }

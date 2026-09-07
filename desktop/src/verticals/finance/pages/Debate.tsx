@@ -149,7 +149,8 @@ export function Debate() {
           if (abortRef.current === ctrl) setError(stage ? `${stage}：${message}` : message);
         },
       }, ctrl.signal);
-      if (abortRef.current === ctrl && !ctrl.signal.aborted && final?.done && stagesRef.current.some((s) => s.done)) {
+      if (abortRef.current === ctrl && !ctrl.signal.aborted && final?.done
+          && final.outcome !== "failed" && final.outcome !== "cancelled" && stagesRef.current.some((s) => s.done)) {
         const body = [
           `# 多空辩论 · ${c}`,
           "",
@@ -171,12 +172,12 @@ export function Debate() {
       }
     } catch (e) {
       if (abortRef.current === ctrl) {
-        if (e instanceof DOMException && e.name === "AbortError") setStatus("已中止");
+        if (e instanceof DOMException && e.name === "AbortError") setStatus("已请求中止；页面停止等待，后台停止尚未确认");
         else setError(e instanceof ApiError ? e.message : String(e));
       }
     } finally {
       if (abortRef.current === ctrl) {
-        if (ctrl.signal.aborted) setStatus("已中止");
+        if (ctrl.signal.aborted) setStatus("已请求中止；页面停止等待，后台停止尚未确认");
         setRunning(false);
         abortRef.current = null;
       }
@@ -209,7 +210,7 @@ export function Debate() {
       <GlassCard>
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
+            <label className="mb-1 block text-xs text-muted-foreground">A 股代码（当前辩论仅支持 A 股）</label>
             <input
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}

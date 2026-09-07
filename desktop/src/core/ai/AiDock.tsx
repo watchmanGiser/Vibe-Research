@@ -39,6 +39,7 @@ export interface AiDockProps {
   copy: AiDockCopy;
   /** 每条回答下面挂什么（例如"存进记录"）。Core 不认识这些，垂类给 */
   renderReplyActions?: (reply: string, question: string) => ReactNode;
+  renderReply?: (reply: string) => ReactNode;
   /**
    * 没配模型时那条引导。**由垂类渲染**，因为它要用垂类的路由组件跳设置页 ——
    * Core 这边写个 `<a href>` 会让单页应用整页重载。
@@ -46,7 +47,7 @@ export interface AiDockProps {
   renderSetup?: () => ReactNode;
 }
 
-export function AiDock({ send, configured, copy, renderReplyActions, renderSetup }: AiDockProps) {
+export function AiDock({ send, configured, copy, renderReplyActions, renderReply, renderSetup }: AiDockProps) {
   const wired = useAiWired();
   const page = useCurrentAiPage();
   const [open, setOpen] = useState(false);
@@ -91,7 +92,7 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
             : "这一页还没有可聊的内容"
         }
         className={cn(
-          "fixed right-5 top-4 z-40 inline-flex items-center gap-1.5 rounded-full px-3.5 py-2",
+          "ai-chat-trigger fixed right-5 top-4 z-40 inline-flex items-center gap-1.5 rounded-full px-3.5 py-2",
           "text-sm font-medium shadow-glow backdrop-blur transition-all",
           page
             ? "bg-primary/20 text-primary ring-1 ring-primary/40 hover:bg-primary/30 hover:ring-primary/60"
@@ -105,8 +106,8 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
       {open && page && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/50" onClick={close} />
-          <aside className="glass relative m-3 flex w-full max-w-md flex-col rounded-2xl">
-            <div className="flex items-center justify-between gap-2 border-b border-border/60 p-4">
+          <aside className="ai-surface relative m-3 flex w-full max-w-md flex-col rounded-2xl overflow-hidden">
+            <div className="ai-surface-header flex items-center justify-between gap-2 border-b border-border/60 p-4">
               <div className="min-w-0">
                 <span className="flex min-w-0 items-center gap-2 font-semibold text-glow">
                   <Sparkles className="h-4 w-4 shrink-0 text-primary" />
@@ -139,7 +140,7 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
                 </div>
                 <div>
                   <p className="mb-1.5 text-xs font-medium text-muted-foreground">将随提问发给 AI 的本页内容：</p>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
 {page.context}
                   </pre>
                 </div>
@@ -151,6 +152,8 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
                   msgs={chat.msgs}
                   loading={chat.loading}
                   err={chat.err}
+                  info={chat.info}
+                  renderReply={renderReply}
                   notice={copy.notice}
                   suggestions={page.suggestions}
                   onPick={(x) => void chat.submit(x, decorate)}
@@ -159,6 +162,7 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
                 <AiComposer
                   placeholder={copy.placeholder}
                   disabled={chat.loading}
+                  onStop={chat.loading ? chat.abort : undefined}
                   onSend={(t) => void chat.submit(t, decorate)}
                 />
               </>

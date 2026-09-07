@@ -1,8 +1,8 @@
-// 自选股实时行情轮询。
+// 自选股快照轮询，不是逐笔实时行情。
 //
 // 几个刻意的选择：
-// - **3 秒一档**：三市场都不做比上游快照更快的无效轮询，
-//   纯粹浪费请求。这就是「能拿到的最快频率」。
+// - 每次明确要求 fresh，跳过产品的 5 分钟缓存；上游仍可能延迟。
+// - 请求完成后等 3 秒再取，不承诺数据每 3 秒更新。
 // - **递归 setTimeout 而不是 setInterval**：单次请求实测 ~750ms，网络一慢 setInterval
 //   会让请求首尾叠在一起。改成「上一次结束后再等 N 秒」，永远不会堆叠。
 // - **非交易时段自动暂停**：收盘后数据不再变化，继续轮询既无意义又给上游添压。
@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Quote } from "@/lib/api";
 import { isAnyMarketTrading, tradingMarketSymbols } from "@/lib/marketSymbol";
+import { quoteSnapshotTime } from "@/lib/quoteSnapshot";
 
 export const LIVE_INTERVAL_MS = 3000;
 const MAX_BACKOFF_MS = 30_000;
@@ -23,7 +24,7 @@ export const isTradingHours = (codes: string[] = [], at = new Date()): boolean =
 export interface LiveQuotesState {
   quotes: Record<string, Quote>;
   loading: boolean;
-  /** 上次成功取到数据的时间戳（ms），从未成功则为 null */
+  /** 已显示价格中最早的源取数时刻（ms）；缺失时为 null */
   updatedAt: number | null;
   /** 轮询是否真的在跑（开关开着 ≠ 在跑：非交易时段 / 页面切走都会暂停） */
   polling: boolean;
@@ -35,7 +36,6 @@ export interface LiveQuotesState {
 export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesState {
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [loading, setLoading] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [polling, setPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,10 +65,9 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     const requested = cs.join(",");
     setLoading(true);
     try {
-      const data = await api.quote(requested);
+      const data = await api.quote(requested, true);
       // 自动轮询只拉开盘市场，必须与休市市场已有快照合并；首次 / 手动刷新才整体替换。
       setQuotes((prev) => onlyCodes ? { ...prev, ...data } : data);
-      setUpdatedAt(Date.now());
       setError(null);
       failuresRef.current = 0;
       return true;
@@ -158,5 +157,5 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     };
   }, [enabled, fetchOnce]);
 
-  return { quotes, loading, updatedAt, polling, error, refresh };
+  return { quotes, loading, updatedAt: quoteSnapshotTime(quotes), polling, error, refresh };
 }

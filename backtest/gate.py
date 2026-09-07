@@ -16,12 +16,13 @@
 """
 
 from __future__ import annotations
+import re
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Sequence
 
-from backtest.loader import LoaderError, assert_a_share_stock, canonical_code, market_of
+from backtest.loader import LoaderError, assert_a_share_stock, canonical_code, market_of, price_basis
 
 # ── 市场规则表：这是「限制是什么」的事实来源 ──
 
@@ -146,6 +147,8 @@ class Plan:
 
 def _parse_day(s: str, what: str) -> date:
     try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(s)):
+            raise ValueError("date_format")
         return datetime.fromisoformat(str(s)).date()
     except ValueError as exc:
         raise ValueError(f"{what} 要写成 YYYY-MM-DD，收到 {s!r}") from exc
@@ -273,12 +276,13 @@ def plan_backtest(
         f"计价币种：{rules.currency}",
     ]
     if rules.price_limit:
-        limits.append(f"涨跌停：{rules.price_limit}（封死时按真实前收判，不成交）")
+        limits.append(f"涨跌停：{rules.price_limit}；创业板 2020-08-24 前按 ±10%。按输入前收与次日开盘近似判定，ST、上市初期/退市例外未建模，不等于真实撮合。")
 
     notes = [
         f"口径：{st.label}（{st.holding}）",
         f"bar 粒度：日线；区间约 {est} 根",
         "信号按次日开盘执行（当日收盘拿到的信号不会当日成交）",
+        price_basis(rules.key),
     ]
     if len(canon) == 1:
         notes.append("单只标的：没有分散，最大回撤基本等于这只票自己的回撤")

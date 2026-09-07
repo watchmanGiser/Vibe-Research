@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { backend, type PageResult } from "@/lib/backend";
 import { Link } from "react-router-dom";
 import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, Plus, X, Flame, BarChart3, Globe } from "lucide-react";
@@ -25,6 +25,8 @@ const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); //
 export function DailyReview() {
   const [indices, setIndices] = useState<IndexQuote[]>([]);
   const [idxErr, setIdxErr] = useState(false);
+  const [idxDone, setIdxDone] = useState(false);
+  const fetchingRef = useRef(false);
   const [review, setReview] = useState("");
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewErr, setReviewErr] = useState<string | null>(null);
@@ -33,6 +35,8 @@ export function DailyReview() {
   const [emotion, setEmotion] = useState<ShortTermEmotion | null>(null);
   const [turnover, setTurnover] = useState<TurnoverTop | null>(null);
   const [globalIdx, setGlobalIdx] = useState<GlobalIndex[]>([]);
+  const [globalErr, setGlobalErr] = useState<string | null>(null);
+  const [globalDone, setGlobalDone] = useState(false);
   // 关注股票（自选，存本地）
   const [watchCodes, setWatchCodes] = useState<string[]>(loadWatch);
   const [watchQuotes, setWatchQuotes] = useState<Record<string, Quote>>({});
@@ -43,12 +47,22 @@ export function DailyReview() {
   const [ovDone, setOvDone] = useState(false);
   const [emoDone, setEmoDone] = useState(false);
   const [toDone, setToDone] = useState(false);
+  const dataReady = idxDone && globalDone && emoDone && toDone && ovDone;
 
-  const loadIndices = () => {
-    api.indices().then(setIndices).catch(() => setIdxErr(true));
-    api.globalIndices().then(setGlobalIdx).catch(() => {});
-    api.emotion().then(setEmotion).catch(() => {}).finally(() => setEmoDone(true));
-    api.turnoverTop().then(setTurnover).catch(() => {}).finally(() => setToDone(true));
+  const loadIndices = async (refresh = false) => {
+    if (fetchingRef.current || reviewLoading) return;
+    fetchingRef.current = true;
+    setIdxDone(false); setIdxErr(false); setOvDone(false); setEmoDone(false); setToDone(false);
+    setEmotion(null); setTurnover(null); setOverview(null); setPageMeta(null);
+    const indexTask = api.indices(refresh).then(setIndices).catch(() => { setIndices([]); setIdxErr(true); }).finally(() => setIdxDone(true));
+    setGlobalDone(false);
+    setGlobalErr(null);
+    setGlobalIdx([]);
+    const globalTask = api.globalIndices(refresh).then(setGlobalIdx)
+      .catch((e) => setGlobalErr(e instanceof Error ? e.message : "全球指数获取失败"))
+      .finally(() => setGlobalDone(true));
+    const emotionTask = api.emotion().then(setEmotion).catch(() => {}).finally(() => setEmoDone(true));
+    const turnoverTask = api.turnoverTop().then(setTurnover).catch(() => {}).finally(() => setToDone(true));
 
     /**
      * 🔴 情绪 / 板块资金 / 涨停梯队 **只取一次**:向 Core 要一屏(`/page/review`),
@@ -56,7 +70,7 @@ export function DailyReview() {
      *    而且 **BFF 注入了业务日、页面这边没有**,同一屏的状态与数字可能是不同两天的。
      */
     setPageErr(null);
-    backend
+    const overviewTask = backend
       .page("review")
       .then((meta) => {
         setPageMeta(meta);
@@ -68,6 +82,8 @@ export function DailyReview() {
       //    否则页面会拿着旧数据继续显示得像正常一样
       .catch((e) => { setPageMeta(null); setPageErr(e instanceof Error ? e.message : String(e)); })
       .finally(() => setOvDone(true));
+    await Promise.allSettled([indexTask, globalTask, emotionTask, turnoverTask, overviewTask]);
+    fetchingRef.current = false;
   };
 
   // 数据块占位：请求没回来 = 加载中；回来了但为空 = 数据源暂不可用（别让用户干等）
@@ -117,13 +133,15 @@ export function DailyReview() {
 
 
   const runReview = async () => {
+    // Ref also covers a refresh click before React commits the pending flags.
+    if (!dataReady || fetchingRef.current || reviewLoading) return;
     setReviewErr(null);
     setNeedConfig(false);
     if (!hasLlm()) { setNeedConfig(true); return; }
     setReviewLoading(true);
     setReview("");
     const prompt =
-      `以下是这一屏的全部客观数据（含业务日与各块读法护栏）：\n${dataSummary}\n\n` +
+      "请根据这一屏的客观数据（含业务日与各块读法护栏）进行分析。\n" +
       "请用中文做当天复盘：整体涨跌、指数表现、情绪与资金面值得注意的点。\n" +
       "🔴 硬要求：① 标了【缺口】的块**不要就它下任何结论**，如实说这块没取到；" +
       "② 引用数字时带上它的读法护栏（【读法·xx】那几行），不要把口径丢掉；" +
@@ -164,6 +182,11 @@ export function DailyReview() {
    */
   const dataSummary = (() => {
     const lines: string[] = [];
+    if (!dataReady) lines.push("【加载中】本轮数据尚未全部返回，可能暂留上轮快照。不要据此作整屏复盘，等待加载结束。");
+    if (idxDone && !indices.length) lines.push("【缺口】A股指数未取得，不据此下结论。");
+    if (emoDone && !emotion) lines.push("【缺口】短线情绪未取得，不据此下结论。");
+    if (toDone && !turnover) lines.push("【缺口】成交排行未取得，不据此下结论。");
+    if (ovDone && (pageErr || !pageMeta)) lines.push("【缺口】资金与涨停页面未取得，业务日和相关读法不可用，不将其他快照认作今日数据。");
     const ctx = pageMeta?.context;
     if (ctx?.review_date) lines.push(`【业务日】${ctx.review_date}（${ctx.review_reason ?? ctx.session_phase}）`);
     if (pageMeta?.mixed_ages) {
@@ -182,7 +205,11 @@ export function DailyReview() {
       : "【A股指数】未取到");
     // 拿不到价的那条**不写进去** —— 让模型看到 null 比不给还糟
     const gi = globalIdx.filter((i) => i.price !== null && i.change_pct !== null);
-    if (gi.length) lines.push(`【海外指数】${gi.map((i) => `${i.name} ${i.price}（${i.change_pct! > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`);
+    lines.push(gi.length
+      ? `【海外指数·腾讯快照，非逐笔实时】${gi.map((i) => `${i.name} ${i.price}（${i.change_pct! > 0 ? "+" : ""}${i.change_pct}%）；取数时间 ${i.fetched_at ?? "未知"}；价格证据 ${i.evidence_id ?? "未提供"}${i.note ? `；读法 ${i.note}` : ""}`).join("；")}`
+      : `【海外指数】${globalErr ?? (globalDone ? "未取得可用数据" : "仍在加载")}；没有可引用的数据，不就此下结论。`);
+    const missingGlobal = globalIdx.filter((i) => i.price === null || i.change_pct === null);
+    if (missingGlobal.length) lines.push(`【海外指数缺口】${missingGlobal.map((i) => i.name).join("、")}报价不完整，不据此下结论。`);
     if (sentCells.length) lines.push(`【市场情绪】${sentCells.map((c) => `${c.k} ${c.v}`).join("；")}`);
     if (emotion) lines.push(`【短线情绪】${JSON.stringify(emotion).slice(0, 400)}`);
     const validSectors = sectors.filter((x) => x.net !== null);
@@ -215,6 +242,16 @@ export function DailyReview() {
         title="每日复盘"
         subtitle={`${bizDay ? `${bizDay} · ` : ""}大盘 / 情绪 / 板块资金一屏看全，交给本地 Agent 做复盘`}
       />
+      <div role="status" className="mb-4 flex flex-wrap gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        {[
+          ["大盘指数", idxDone, indices.length > 0 && !idxErr],
+          ["全球指数", globalDone, globalIdx.some((g) => g.price !== null) && !globalErr],
+          ["情绪数据", emoDone, !!emotion],
+          ["成交排行", toDone, !!turnover],
+          ["资金与涨停", ovDone, !!overview && !pageErr],
+        ].map(([label, done, available]) => <span key={String(label)}>{label} · {done ? available ? "已返回（详见快照与缺口）" : "未取得可用数据" : "请求中…"}</span>)}
+        {![idxDone, globalDone, emoDone, toDone, ovDone].every(Boolean) && <span className="w-full">数据分批返回，请求中可能暂留上次指数快照；已返回不代表全部资料完整。无需重复刷新。</span>}
+      </div>
 
       {pageErr && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -253,7 +290,7 @@ export function DailyReview() {
       {/* 1. 大盘指数（实时） */}
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-muted-foreground">大盘指数</h3>
-        <button onClick={loadIndices} className="text-muted-foreground hover:text-primary" title="刷新"><RefreshCw className="h-3.5 w-3.5" /></button>
+        <button onClick={() => loadIndices(true)} disabled={reviewLoading || !dataReady} className="text-muted-foreground hover:text-primary disabled:opacity-50" title="刷新"><RefreshCw className="h-3.5 w-3.5" /></button>
       </div>
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {indices.length === 0
@@ -273,20 +310,25 @@ export function DailyReview() {
       </div>
 
       {/* 1b. 全球市场（隔夜外围脸色：A 股常看美股 / 港股） */}
-      {globalIdx.length > 0 && (
+      {(
         <>
           <div className="mb-3 flex items-center gap-2">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground"><Globe className="h-4 w-4" /> 全球市场</h3>
-            <span className="text-[11px] text-muted-foreground/50">隔夜外围 · A 股常看美股 / 港股脸色</span>
+            <span className="text-[11px] text-muted-foreground/50">腾讯行情快照 · 非逐笔实时行情</span>
           </div>
+          {globalIdx.length === 0 && <p role="status" className="mb-4 text-sm text-muted-foreground">
+            {globalErr ?? (globalDone ? "全球指数未取得可用数据，不代表市场没有变化。" : "全球指数加载中…")}
+          </p>}
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
             {globalIdx.map((g) => (
               <GlassCard key={g.key} className="p-3">
                 <p className="truncate text-xs text-muted-foreground">{g.name} <span className="text-muted-foreground/40">{g.region}</span></p>
-                <p className={cn("mt-1 font-mono text-lg font-bold", g.change_pct == null ? "text-foreground" : pctColor(g.change_pct))}>{g.price ?? "—"}</p>
+                <p title={`取数时间：${g.fetched_at ?? "未知"}；价格证据：${g.evidence_id ?? "未取得"}`} className={cn("mt-1 font-mono text-lg font-bold", g.change_pct == null ? "text-foreground" : pctColor(g.change_pct))}>{g.price ?? "—"}</p>
                 <p className={cn("text-xs", g.change_pct == null ? "text-muted-foreground" : pctColor(g.change_pct))}>
                   {g.change_pct == null ? "—" : `${g.change_pct > 0 ? "+" : ""}${g.change_pct}%`}
                 </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{g.fetched_at ? `取数：${new Date(g.fetched_at).toLocaleString()}` : "取数时间未知"}</p>
+                {g.note && <p role="status" className="mt-1 text-[11px] text-muted-foreground">{g.note}</p>}
               </GlassCard>
             ))}
           </div>
@@ -347,10 +389,10 @@ export function DailyReview() {
       <GlassCard glow className="mb-6">
         <div className="flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> Agent 当日复盘</h3>
-          <button onClick={runReview} disabled={reviewLoading}
+          <button onClick={runReview} disabled={reviewLoading || !dataReady}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
             {reviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {review ? "重新复盘" : "让 Agent 复盘今天"}
+            {!dataReady ? "等待本轮数据…" : review ? "重新复盘" : "让 Agent 复盘今天"}
           </button>
         </div>
         {needConfig && (

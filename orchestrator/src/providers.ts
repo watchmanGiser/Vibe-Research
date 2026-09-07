@@ -42,6 +42,28 @@ export interface ProviderProfileFile {
   stream_idle_timeout_ms?: number;
   matrix?: { status: string; note?: string; last_run?: string; results?: Record<string, string> };
   /**
+   * **直连引擎(Chat Completions)路径下的实测能力**。
+   *
+   * 🔴 为什么不能复用上面的 `structured_output`:那个字段记的是 **Responses 端点**的实测结果。
+   *    同一家的两个端点能力可以不同 —— 实测 MiMo 的 Responses **不支持** json_schema,
+   *    而它的 Chat Completions **支持**。照抄上面那个字段会让直连白白降级。
+   *
+   * 缺省(不写这一段)= **没测过**,直连按最保守方式走并**出声**,不是静默降级。
+   */
+  direct?: {
+    /** 这家的 Chat Completions 端点是否实测可用 */
+    supported: boolean;
+    /** 缺省沿用顶层 base_url */
+    base_url?: string | null;
+    /** 缺省沿用顶层 default_model */
+    default_model?: string | null;
+    /** 实测的结构化输出能力:服务端 schema 约束,还是只能写进提示词 */
+    structured_output: "server_schema" | "prompt";
+    /** 实测日期 YYYY-MM-DD */
+    verified_at?: string;
+    notes?: string[];
+  };
+  /**
    * 这家支持哪种"强制结构化产出"。缺省 = `json_schema`(OpenAI 的做法)。
    * `prompt` = 它的 Responses 端点**不认 `text.format.type=json_schema`**,只能把 schema 写进提示词。
    * 实测:小米 MiMo 返回 `responses_feature_not_supported:only 'text' and 'json_object' are allowed`。
@@ -52,6 +74,16 @@ export interface ProviderProfileFile {
 }
 
 export const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+/** URL 的共同边界:远程 HTTPS;HTTP 仅显式本机回环,不接受 URL 内凭据。 */
+export function providerUrlError(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value); } catch { return "模型地址不是合法 URL"; }
+  if (/[\\\s]/.test(value)) return "模型地址不能包含空白或反斜杠";
+  if (url.username || url.password || url.search || url.hash) return "模型地址不能携带用户名密码、查询参数或片段;请把凭据填到 API Key";
+  if (url.protocol === "https:") return null;
+  if (url.protocol === "http:" && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(value)) return null;
+  return "远程模型地址必须使用 HTTPS;HTTP 仅允许 localhost、127.0.0.1 或 [::1] 的本机服务";
+}
 const ENV_KEY_RE = "^[A-Z][A-Z0-9_]*$";
 const FORBIDDEN_ENV = ["PATH", "HOME", "USER", "SHELL", "CODEX_HOME", "TMPDIR", "LANG", "TERM"];
 
@@ -61,7 +93,7 @@ export const providerProfileSchema = {
   required: ["id", "name", "wire_api", "base_url", "env_key", "auth_modes", "requires_openai_auth", "default_model", "responses_support"],
   properties: {
     id: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,31}$" }, name: { type: "string", minLength: 1 }, wire_api: { type: "string", enum: ["responses", "chat"] },
-    base_url: { type: ["string", "null"], pattern: "^https://[^\\s]+$" }, env_key: { type: "string", pattern: ENV_KEY_RE, not: { enum: FORBIDDEN_ENV } },
+    base_url: { type: ["string", "null"], pattern: "^https?://[^\\s]+$" }, env_key: { type: "string", pattern: ENV_KEY_RE, not: { enum: FORBIDDEN_ENV } },
     auth_modes: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", enum: ["chatgpt_login", "api_key"] } }, requires_openai_auth: { type: "boolean" }, default_model: { type: ["string", "null"] },
     responses_support: { type: "string", enum: ["native", "gateway", "none"] }, stream_format: { type: "string" }, tool_calls: { type: "boolean" }, reasoning: { type: "string" }, context_limit_tokens: { type: ["integer", "null"], minimum: 1 },
     retryable_errors: { type: "array", items: { type: "string" } }, known_incompatibilities: { type: "array", items: { type: "string" } },
@@ -70,6 +102,20 @@ export const providerProfileSchema = {
     matrix: { type: "object", additionalProperties: false, properties: { status: { type: "string" }, note: { type: "string" }, last_run: { type: "string" }, results: { type: "object", additionalProperties: { type: "string" } } } },
     structured_output: { type: "string", enum: ["json_schema", "prompt"] },
     verified_at: { type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+    // 直连(Chat Completions)路径的实测能力。**这一段的 structured_output 与顶层那个是两回事**:
+    // 顶层记 Responses 端点,这里记 Chat Completions 端点,同一家可以不同(MiMo 就是)。
+    // ⚠️ TS 类型改了不会报错,运行时的门是这份 schema —— 两份真理源,加字段时必须一起改。
+    direct: {
+      type: "object", additionalProperties: false, required: ["supported", "structured_output"],
+      properties: {
+        supported: { type: "boolean" },
+        base_url: { type: ["string", "null"], pattern: "^https?://[^\\s]+$" },
+        default_model: { type: ["string", "null"] },
+        structured_output: { type: "string", enum: ["server_schema", "prompt"] },
+        verified_at: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+        notes: { type: "array", items: { type: "string" } },
+      },
+    },
   },
 } as const;
 
@@ -78,6 +124,46 @@ export type StructuredOutputMode = "json_schema" | "prompt";
 /** 这家支持哪种强制结构化产出。没声明 = `json_schema`(OpenAI 的做法,也是引擎的默认路径) */
 export function structuredOutputMode(prof?: ProviderProfileFile | null): StructuredOutputMode {
   return prof?.structured_output ?? "json_schema";
+}
+
+/** 直连路径能不能用这家、以及用到什么程度 */
+export interface DirectCapability {
+  supported: boolean;
+  /**
+   * 🔴 **没测过**,不是"已验证的保守选择"。
+   * 两者最终都会走 prompt 模式,外观一模一样 —— 但一个是"我们知道它只能这样",
+   * 另一个是"我们不知道"。调用方必须把后者说出来,否则用户会以为这是产品的结论。
+   */
+  unverified: boolean;
+  baseURL: string | null;
+  model: string | null;
+  structuredOutput: "server_schema" | "prompt";
+  /** 给事件流与界面看的一句话理由 */
+  reason: string;
+}
+
+/**
+ * 读出某个 provider 在**直连路径**下的能力。
+ * ⚠️ 不要退回去读顶层的 `structured_output` —— 那是 Responses 端点的口径(见 ProviderProfileFile.direct 的注释)。
+ */
+export function directCapabilityOf(prof?: ProviderProfileFile | null): DirectCapability {
+  if (!prof) {
+    return { supported: false, unverified: true, baseURL: null, model: null, structuredOutput: "prompt",
+      reason: "没有选定 provider 模板:直连需要显式的 base_url 与密钥环境变量名" };
+  }
+  const d = prof.direct;
+  const baseURL = d?.base_url ?? prof.base_url;
+  const model = d?.default_model ?? prof.default_model ?? null;
+  if (!d) {
+    return { supported: false, unverified: true, baseURL, model, structuredOutput: "prompt",
+      reason: `${prof.id} 的模板没有 direct 段:这家的 Chat Completions 端点还没实测过(模板里的 structured_output 记的是 Responses 端点,不能拿来当直连的结论)` };
+  }
+  if (!d.supported) {
+    return { supported: false, unverified: false, baseURL, model, structuredOutput: d.structured_output,
+      reason: `${prof.id} 的模板声明其 Chat Completions 端点不可用${d.verified_at ? `(实测于 ${d.verified_at})` : ""}` };
+  }
+  return { supported: true, unverified: false, baseURL, model, structuredOutput: d.structured_output,
+    reason: `${prof.id} 直连实测可用${d.verified_at ? `(${d.verified_at})` : ""};结构化输出=${d.structured_output}` };
 }
 
 /**
@@ -114,6 +200,9 @@ export function validateProfile(p: unknown, label: string): ProviderProfileFile 
   const errs = validateWith("provider-profile", providerProfileSchema, p);
   if (errs.length) throw new Error(`${label} 不符合 provider profile schema:${errs.slice(0, 5).join("; ")}`);
   const prof = p as ProviderProfileFile;
+  for (const u of [prof.base_url, prof.direct?.base_url]) {
+    if (u) { const error = providerUrlError(u); if (error) throw new Error(`${label}:${error}`); }
+  }
   // 密钥不得写进 profile:http_headers 值 / query_params 值若像 token 直接拒绝(密钥只走 env_key / env_http_headers)
   for (const [k, v] of Object.entries({ ...(prof.http_headers ?? {}), ...(prof.query_params ?? {}) })) {
     if (SECRET_LIKE.test(v) || /key|token|secret|password/i.test(k) && v.length > 8) throw new Error(`${label}:${k} 看起来含密钥值;密钥只能通过环境变量(env_key / env_http_headers)提供`);

@@ -20,6 +20,18 @@ BASE = dict(total_return=0.1, annual_return=0.02, max_drawdown=-0.3, sharpe=0.5,
             calmar=0.1, sortino=0.4, trade_count=3, win_rate=0.66, profit_loss_ratio=1.2)
 
 
+def test_no_loss_ratios_are_unavailable_not_zero():
+    from types import SimpleNamespace
+    from backtest.metrics import win_rate_and_stats
+    for pnls in ([], [100], [0], [100, 0]):
+        stats = win_rate_and_stats([SimpleNamespace(pnl=p, holding_bars=2) for p in pnls])
+        assert stats["profit_loss_ratio"] is None
+        assert stats["profit_factor"] is None
+    mixed = win_rate_and_stats([SimpleNamespace(pnl=p, holding_bars=2) for p in [100, -50]])
+    assert mixed["profit_loss_ratio"] == 2
+    assert mixed["profit_factor"] == 2
+
+
 def make(metrics=None, missing=None, prov=None) -> Result:
     return Result(metrics={**BASE, **(metrics or {})}, plan=PLAN, strategy="测试策略",
                   provenance=prov or {}, limits=list(PLAN.limits), notes=list(PLAN.notes),
@@ -48,9 +60,63 @@ def test_agent_result_forces_self_benchmark_and_cash_drag_disclosures():
     assert any("总换手率为 0.874" in line and "未投入现金" in line for line in lines)
 
 
+def test_agent_result_preserves_execution_fees_and_currency():
+    view = _result_view(make({"execution_fees": 123.456, "fill_count": 4}))
+    assert view["metrics"]["execution_fees"] == 123.456
+    assert view["metrics"]["fill_count"] == 4
+    assert view["plan"]["currency"] == "CNY"
+    assert any("平仓记录" in line and "fill_count" in line for line in view["required_disclosures"])
+    assert any("滑点" in line and "execution_fees" in line for line in view["required_disclosures"])
+    assert any("滑点通过引擎成交价格模型反映在净值中" in line for line in view["required_disclosures"])
+
+
+def test_legacy_result_does_not_invent_zero_execution_fees():
+    view = _result_view(make())
+    assert "execution_fees" not in view["metrics"]
+    assert "fill_count" not in view["metrics"]
+
+
 def test_external_benchmark_and_full_turnover_do_not_claim_those_limitations():
     view = _result_view(make({"benchmark_return": -0.1, "benchmark_ticker": "000300.SH", "total_turnover": 1.2}))
-    assert view["required_disclosures"] == []
+    assert not any("不是独立外部基准" in n or "未投入现金" in n for n in view["required_disclosures"])
+    assert any("前复权" in n and "不单独记现金分红" in n and "重述" in n for n in view["required_disclosures"])
+
+
+def test_runtime_notes_reach_required_disclosures_without_truncation():
+    r = make()
+    note = "以下标的自身历史不足：" + "300308.SZ 仅 400 根；" * 40
+    r.notes.extend([note, note])
+    view = _result_view(r)
+    assert view["required_disclosures"].count(note) == 1
+    assert all(n not in view["required_disclosures"] for n in PLAN.notes if "不单独记现金分红" not in n)
+    assert view["plan"]["notes"] == PLAN.notes
+
+
+@pytest.mark.parametrize("code", ["AAPL", "00700.HK"])
+def test_yahoo_price_basis_is_forced_even_without_runtime_notes(code):
+    result = make()
+    result.plan = plan_backtest(codes=[code], start="2021-01-01", end="2025-12-31", style="long")
+    result.notes = []
+    disclosures = _result_view(result)["required_disclosures"]
+    assert any("indicators.quote" in n and "adjclose" in n and "不单独记现金分红" in n and "重述" in n for n in disclosures)
+
+
+def test_real_run_thin_history_reaches_tool_result(tmp_path, monkeypatch):
+    import backtest.run as RUN
+
+    frames = _frames(600, ("600519.SH",))
+    frames.update(_frames(400, ("300308.SZ",)))
+
+    class FakeLoader:
+        failures, provenance = {}, {}
+        def __init__(self, *args, **kwargs): pass
+        def fetch(self, *args, **kwargs): return frames
+
+    monkeypatch.setattr(RUN, "VibeLoader", FakeLoader)
+    plan = plan_backtest(codes=list(frames), start="2021-01-01", end="2025-12-31", style="long")
+    result = RUN.run(plan, _Flat(), run_dir=tmp_path)
+    notes = _result_view(result)["required_disclosures"]
+    assert any("300308.SZ" in n and "400 根" in n and "仍参与" in n for n in notes)
 
 
 def test_real_index_benchmark_is_named():

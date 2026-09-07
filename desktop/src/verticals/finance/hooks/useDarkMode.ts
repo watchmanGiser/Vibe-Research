@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { storageGet, storageSet } from "@/lib/storage";
 
-// 默认呈现暗色暖橙；用户可切亮色，选择存 localStorage。
+// 恢复公开版暖橙主题，保留既有深浅主题选择。
 // 机制：亮色时给 <html> 加 .light（暗色为无类名的默认态）。
 export function useDarkMode() {
   const [dark, setDark] = useState(() => {
