@@ -5,13 +5,11 @@ const REALTIME_URL = "/realtime/?v=compact-20260908-1&layout=compact";
 
 export function Realtime() {
   const [frameKey, setFrameKey] = useState(() => Date.now());
-  const [panelReady, setPanelReady] = useState<boolean | null>(null);
   const frameUrl = `${REALTIME_URL}&reload=${frameKey}`;
   const [loading, setLoading] = useState(true);
 
   function refreshFrame() {
     setLoading(true);
-    setPanelReady(null);
     setFrameKey((key) => Math.max(Date.now(), key + 1));
   }
 
@@ -56,16 +54,6 @@ export function Realtime() {
         </div>
       </header>
 
-      {panelReady === false && (
-        <div role="alert" data-testid="realtime-panel-status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs">
-          <span>未检测到页面底部的实时观察提示，当前嵌入内容可能未更新。</span>
-          <div className="flex gap-3">
-            <button type="button" onClick={refreshFrame} className="text-primary underline">重新加载</button>
-            <a href={frameUrl} target="_blank" rel="noreferrer" className="text-primary underline">单独查看</a>
-          </div>
-        </div>
-      )}
-
       <div className="glass relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/60">
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 backdrop-blur-sm">
@@ -80,14 +68,8 @@ export function Realtime() {
           src={frameUrl}
           title="成交分析实时版"
           className="h-full w-full bg-white"
-          onLoad={(event) => {
+          onLoad={() => {
             setLoading(false);
-            try {
-              const doc = event.currentTarget.contentDocument;
-              setPanelReady(Boolean(doc?.querySelector("#signalPanel") && doc.querySelector("#signalCards")));
-            } catch {
-              setPanelReady(false);
-            }
           }}
           referrerPolicy="strict-origin-when-cross-origin"
         />
