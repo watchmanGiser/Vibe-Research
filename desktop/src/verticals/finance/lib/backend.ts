@@ -500,6 +500,19 @@ export const backend = {
     ),
 
   runs: (limit = 50) => call<RunListItem[]>(`/runs?limit=${limit}`),
+  /** 删除一次研究运行(归档清理)。后端对进行中 / 无从确认终态的 run 抛 run_in_progress 等错误码;
+   *  404 + not_found = 这条记录本来就不在了(别人删过、或列表是旧的),对调用方来说结果与删掉一样,
+   *  统一回 deleted:false,不要让界面弹一句「删除失败:HTTP 404」。 */
+  deleteRun: async (id: string) => {
+    try {
+      return await call<{ run_id: string; deleted: boolean }>(`/runs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    } catch (e) {
+      // 只认后端自己发的 not_found 码。光看 404 会把"代理/路由返回的 404"(HTML 错误页 → bad_response,
+      // 或路径形状不对 → 通用 not found)也吞成删除成功,界面刷新后一个字的异常都看不见。
+      if (e instanceof ApiError && e.status === 404 && e.code === "not_found") return { run_id: id, deleted: false };
+      throw e;
+    }
+  },
   report: (id: string) =>
     call<{ run_id: string; report: string | null; appendix: string | null; availability: "ready" | "unvalidated" | "missing"; run_status: string | null }>(`/runs/${encodeURIComponent(id)}/report`),
 };

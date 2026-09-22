@@ -354,7 +354,7 @@ export function judgeHookProbe(runDirs: string[], probe: "stop" | "stop_terminat
   } else if (probe === "stop_terminate") {
     const a1 = log.filter((e) => e.hook === "stop" && e.stage === stage && e.attempt === 1);
     const terminated = ev.some((e) => e.type === "hooks.stop_terminated" && e.stage === stage);
-    checks.push(ok("第 1 轮:Stop block 2 次后 continue:false 终止", a1.filter((e) => e.decision === "block").length >= 2 && a1.some((e) => e.decision === "stop"), a1.map((e) => e.decision).join(",")),
+    checks.push(ok("第 1 轮:Stop 连续 block(≥2 次)后 continue:false 终止", a1.filter((e) => e.decision === "block").length >= 2 && a1.some((e) => e.decision === "stop"), a1.map((e) => e.decision).join(",")),
       ok("编排器事件 hooks.stop_terminated + 第 1 轮判失败 + 补跑(attempts ≥ 2)", terminated && (st?.attempts ?? 0) >= 2 && (st?.errors ?? []).some((e) => /Stop 钩子终止/.test(e)), `terminated=${terminated},attempts=${st?.attempts}`),
       ok("补跑后阶段 complete", st?.status === "complete", st?.status ?? "missing"),
       ok("manifest.hooks.stop_terminations ≥ 1 且与日志一致", m.hooks.stop_terminations >= 1 && m.hooks.stop_terminations === sum.stop_terminations, `${m.hooks.stop_terminations} / ${sum.stop_terminations}`));
@@ -421,7 +421,7 @@ export function buildTests(python: string, repoRoot: string): HardTest[] {
       ] }, judge: (d) => judgeThermoHistory(d[0]) },
     { id: "industry_thermometer", expectExit: [0], group: "8 产业温度计", name: "真实运行(不注入):标的命中 ai_compute → 台系月营收 + GPU 租金真取数 → risk 有 topic「产业温度计」→ 报告章节每个数字绑到温度计证据、护栏句同在、不写成本公司事实", extraArgs: ["--endpoints", "full"], judge: (d) => judgeIndustryThermometer(d[0]) },
     { id: "hook_stop", expectExit: [2], group: "H 钩子硬验收", name: "Stop 真实 block 一次后继续", stages: ["profile"], scenario: { hook_probe: "stop", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "stop") },
-    { id: "hook_terminate", expectExit: [2], group: "H 钩子硬验收", name: "Stop 两次 block 后 continue:false 终止并补跑", stages: ["profile"], scenario: { hook_probe: "stop_terminate", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "stop_terminate") },
+    { id: "hook_terminate", expectExit: [2], group: "H 钩子硬验收", name: "Stop 连续 block 后 continue:false 终止并补跑", stages: ["profile"], scenario: { hook_probe: "stop_terminate", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "stop_terminate") },
     { id: "hook_pretool", expectExit: [2], group: "H 钩子硬验收", name: "PreToolUse 真实 block 联网命令", stages: ["profile"], scenario: { hook_probe: "pretool", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "pretool") },
     { id: "hook_fault_timeout", expectExit: [2], group: "H 钩子硬验收", name: "Stop 钩子超时(fail-open,运行仍完成)", stages: ["profile"], scenario: { hook_fault: "timeout", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "fault_timeout") },
     { id: "hook_fault_crash", expectExit: [2], group: "H 钩子硬验收", name: "Stop 钩子脚本崩溃(fail-open,运行仍完成)", stages: ["profile"], scenario: { hook_fault: "crash", probe_stage: "profile" }, judge: (r: string[]) => judgeHookProbe(r, "fault_crash") },

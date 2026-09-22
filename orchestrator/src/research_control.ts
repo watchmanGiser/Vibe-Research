@@ -58,6 +58,12 @@ export function reserveResearch(dataRoot: string, runId: string): ResearchContro
   writeJson(controlPath(dataRoot, runId, "owner.json"), record);
   return record;
 }
+/** 删掉一次运行的控制记录目录(研究归档被删除时同步清掉)。
+ *  目录不存在按成功处理;runId 非法或路径含链接由 controlPath 拦下(抛 ResearchControlError),
+ *  不会顺着链接删到数据区外面去。调用方必须先确认这条运行已经结束。 */
+export function removeResearchControl(dataRoot: string, runId: string): void {
+  fs.rmSync(controlPath(dataRoot, runId), { recursive: true, force: true });
+}
 export function updateResearchControl(dataRoot: string, runId: string, token: string, state: ResearchControl["state"]): void {
   const record = readResearchControl(dataRoot, runId);
   if (!record || record.token !== token) throw new ResearchControlError("control_mismatch", "研究运行身份不匹配");

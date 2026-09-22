@@ -16,7 +16,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runToolRequest, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportPreview, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runToolRequest, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportPreview, reportUpload, reportsList, researchStatus, safePath, serviceContext, deleteRun, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 import { fetchSemi, SemiUpstreamError } from "./semi.ts";
@@ -339,6 +339,15 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         if (Object.keys(b).some((key) => key !== "run_id")) throw new ServiceError("bad_request", "取消只接受研究编号");
         return send(res, 200, cancelResearch(ctx, b.run_id));
       }
+      if (req.method === "DELETE" && parts[0] === "runs" && parts[1] && parts.length === 2) {
+        // 删除一次研究运行(归档清理,用户反馈 2026-09-06);service 层做终态确认——清单缺失/损坏/未结束、
+        // control 明确在跑或读不出来都拒(manifest_missing/manifest_corrupt/run_in_progress/control_unreadable),
+        // 删除动作本身失败则是 delete_failed。
+        const r = deleteRun(ctx, parts[1]);
+        // 404 体带上 error 码:调用方要能把"这条本来就不在了"和"代理/路由返回的 404"分开,
+        // 只看状态码分不开(前端会把后者也当成删成功,见 backend.deleteRun)
+        return r.deleted ? send(res, 200, r) : send(res, 404, { ...r, error: "not_found" });
+      }
       if (req.method === "GET" && url.pathname === "/runs") return send(res, 200, listRuns(ctx, q.limit ? Number(q.limit) : undefined));
       // 「昨天以来变了什么」:对齐同一对象最近两次研究。**不足两次会报 need_two_runs**,
       // 调用方据此区分"没变化"与"还没有可比较的第二次"——这两件事完全不同(见 service.evidenceAlerts)。
@@ -396,6 +405,11 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
           return send(res, 413, { error: e.code, message: redact(e.message, 200) });
         }
         if (e.code === "resume_not_found") return send(res, 404, { error: e.code, message: redact(e.message, 200) });
+        // 其余 ServiceError 一律 400 —— **这是刻意的,别再按"语义更准"逐个改状态码**。
+        // 复审两轮都提过删除那组:run_in_progress / control_unreadable 像 409,delete_failed(EACCES/EBUSY)像 5xx。
+        // 不改的判据是"有没有消费者因此行为不同":调用方(desktop backend.ts)一律读 `error` 码做分支,
+        // 没有任何一处按 4xx/5xx 决定重试或告警;把四个码拆到三种状态只会让这组更不齐,
+        // 而 `error` 码本身已经把原因说得比状态码细。要改就四个一起改,并同时改前端与文档。
         return send(res, 400, { error: e.code, message: redact(e.message, 200) });
       }
       console.error(`[api] internal error: ${redact(e instanceof Error ? e.stack ?? e.message : String(e), 600)}`);

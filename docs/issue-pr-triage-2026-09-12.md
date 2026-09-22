@@ -7,8 +7,8 @@
 | [#42](https://github.com/simonlin1212/Vibe-Research/pull/42) 数字引用校验 | v1.2.0 已适配，说明后关闭，保留贡献致谢。 |
 | [#45](https://github.com/simonlin1212/Vibe-Research/pull/45) 计算记录缺字段 | 主分支已先检查记录契约再访问字段，说明后关闭；不采用静默跳过坏记录。 |
 | [#43](https://github.com/simonlin1212/Vibe-Research/pull/43) 新闻备用请求 | 参考贡献与 AkShare 请求形态，采用下面的有界、可追溯实现，未直接合并原 PR。 |
-| [#46](https://github.com/simonlin1212/Vibe-Research/pull/46) 阶段恢复 | 已回复，等待最小复现和拆分；未把文件修改时间视为有效计算进展，未放宽 HTTP 接入策略。 |
-| [#47](https://github.com/simonlin1212/Vibe-Research/pull/47) 报告渲染与删除 | 已回复，保留现有阅读器；请把归档删除拆分并补足活跃记录、坏清单保护。 |
+| [#46](https://github.com/simonlin1212/Vibe-Research/pull/46) 阶段恢复 | 已回复，等待最小复现和拆分；未把文件修改时间视为有效计算进展，未放宽 HTTP 接入策略。**2026-09-20 已合并**（推进判据取新增合法计算记录，非 mtime），收口修复见 CHANGELOG [Unreleased]。 |
+| [#47](https://github.com/simonlin1212/Vibe-Research/pull/47) 报告渲染与删除 | 已回复，保留现有阅读器；请把归档删除拆分并补足活跃记录、坏清单保护。**删除部分已拆为 #49 并于 2026-09-20 合并**，收口修复见 CHANGELOG [Unreleased]。 |
 | [#37](https://github.com/simonlin1212/Vibe-Research/pull/37) Docker | 当前实现未通过访问控制、指令资产和登录隔离审查，说明后关闭。 |
 | [#48](https://github.com/simonlin1212/Vibe-Research/issues/48) API 保存 | 保持开放，等待报告者重测；不宣称旧安装包问题已完整复现。 |
 | [#41](https://github.com/simonlin1212/Vibe-Research/issues/41) GPU 历史库 | 保留功能需求，尚未实现。 |

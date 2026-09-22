@@ -6,7 +6,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
-import { readResearchControl, reserveResearch, updateResearchControl, requestResearchCancellation, researchDecision, ResearchControlError } from "./research_control.ts";
+import { readResearchControl, removeResearchControl, reserveResearch, updateResearchControl, requestResearchCancellation, researchDecision, ResearchControlError, type ResearchControl } from "./research_control.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import type { AssistantTool, ToolReceipt } from "./assistant_bridge.ts";
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { researchFailure } from "./research_failure.ts";
 import { runAlerts, InsufficientRunsError, type AlertDiff } from "./alerts.ts";
-import { NOFOLLOW_FLAG, nowIso, readJsonIfExists } from "./fsutil.ts";
+import { NOFOLLOW_FLAG, nowIso, readJson, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, applyGate, chatSend as chatSendCore, llmProbe as llmProbeCore, parseHeadlineTranslationReply, prepareHeadlineTranslation, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult, type LlmProbeResult } from "./chat.ts";
 import { DirectTransportError, chatCompletion } from "./engines/direct_transport.ts";
 import { assertExecutionMode, resolveDirectProvider, resolveRuntimeProvider, resolveSelectedRuntime, runtimeSourceFingerprint, RuntimeProviderError, templateMatrix, type LlmOverride } from "./runtime_provider.ts";
@@ -737,6 +737,64 @@ export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; sta
       test_scenario: m?.test_scenario === true,
     };
   });
+}
+
+/**
+ * 删除一次研究运行(整目录)。用户反馈"研究归档没有删除方法"(2026-09-06)。
+ *
+ * 安全边界(按 review 2026-09-12 加固):删除许可要**正向证据**——必须能确认这条记录已经结束,
+ * 任何一条证据给不出"已结束"就拒删,而不是"确认它还在跑才拒"(旧版 m==null 时直接删目录):
+ *   ① run id 走 assertRunId(防路径穿越);
+ *   ② 目录不存在 → 404 语义(deleted:false),不抛;
+ *   ③ **清单(manifest.json)缺失** → manifest_missing:没有清单就无从确认这条运行是否结束,
+ *      不能删(可能正跑到一半,删了把半截运行连同已烧的额度一起抹掉);
+ *   ④ **清单损坏**(是文件但 JSON 解析失败)→ manifest_corrupt:同上,数据已不可信,拒删并提示;
+ *   ⑤ **清单未结束**(finished_at 缺失或非法时间)→ run_in_progress:还在写盘;
+ *   ⑥ 进程级兜底:control(owner.json)明确未收尾(存在且 finished_at=null)→ run_in_progress;
+ *      control 读不出来(损坏 / 路径含链接)→ control_unreadable,同样拒删。
+ * 全部通过才删:先删 control 记录,再 rmSync 运行目录(顺序理由见下)。
+ * 删除这两步自身失败(EACCES / EBUSY / ENOTEMPTY)→ delete_failed,不让 fs 的 errno 直接变成 500。
+ */
+export function deleteRun(ctx: ServiceContext, runId: string): { run_id: string; deleted: boolean } {
+  const { id, dir } = runDirOf(ctx, runId);
+  if (!fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return { run_id: id, deleted: false };
+
+  const manifestPath = safePath(ctx, "runs", id, "manifest.json");
+  // ③ 清单缺失:无从确认终态,拒删(区别于 404 的"目录不存在")
+  if (!fs.existsSync(manifestPath)) throw new ServiceError("manifest_missing", "该运行没有清单(manifest.json),无法确认是否已结束,未删除;如确认要清理可手动删除该运行目录");
+  // ④ 清单损坏:文件在但不是合法 JSON(可能写到一半),数据不可信,拒删
+  let m: Record<string, unknown>;
+  try { m = readJson<Record<string, unknown>>(manifestPath); }
+  catch { throw new ServiceError("manifest_corrupt", "该运行的清单已损坏(JSON 无法解析),无法确认是否已结束,未删除"); }
+  // ⑤ 清单未结束:finished_at 缺失 / 非字符串 / 非法时间 ⇒ 认为还在跑或没收尾
+  const finished = m.finished_at;
+  if (typeof finished !== "string" || !Number.isFinite(Date.parse(finished)))
+    throw new ServiceError("run_in_progress", "该研究还在进行中(清单未记录结束时间),等它跑完再删");
+  // ⑥ 进程级兜底:control(owner.json)比 manifest 更实时,worker 还在就拦住。
+  //    读不出来(损坏 / 路径含链接 / 权限)同样拒删:它抛的是 ResearchControlError,不是 ServiceError,
+  //    吞掉就等于"少了一条证据照删",而本函数的规矩是任何一条证据给不出"已结束"就不删。
+  let control: ResearchControl | null;
+  try { control = readResearchControl(ctx.dataRoot, id); }
+  catch (e) {
+    // 只有 ResearchControlError 是"记录本身有问题";EACCES/EMFILE 这类是环境故障,
+    // 一律说成"损坏"会把排查引到错的方向,所以非预期异常要留一行根因(拒删的结论不变)
+    if (!(e instanceof ResearchControlError)) console.error(`[deleteRun] 读取进程记录异常:${redact(e instanceof Error ? e.message : String(e), 200)}`);
+    throw new ServiceError("control_unreadable", "该研究的进程记录读不出来(可能损坏,也可能是权限或路径问题),无法确认它是否还在跑,未删除;如确认这次运行早已结束,可手动删除该运行目录与 .local/research-control/<run-id>");
+  }
+  if (control && !control.finished_at) throw new ServiceError("run_in_progress", "该研究还在进行中,等它跑完再删");
+  // 先清进程记录再删运行目录:反过来的话这一步失败就只剩孤儿 control(reserveResearch 靠它判 run_exists),
+  // 而且用户已经看到目录没了却收到报错。这个顺序下第一步失败时运行目录还原封不动。
+  // 两步都要接:它们抛的是 fs 的 errno 错误(EACCES/EBUSY/ENOTEMPTY),不是 ServiceError ——
+  // 不接就直接 500 "internal",正好把上面 ⑥ 刚堵住的洞在这里重新开一个。
+  try {
+    removeResearchControl(ctx.dataRoot, id);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
+    console.error(`[deleteRun] 删除未完成(${code}):${redact(e instanceof Error ? e.message : String(e), 200)}`);
+    throw new ServiceError("delete_failed", `删除没能完成(${code}),这次归档可能只删掉了一部分,请检查该运行目录的权限或是否被其他程序占用`);
+  }
+  return { run_id: id, deleted: true };
 }
 
 export function knowledgeRecall(ctx: ServiceContext, symbol: string, market: string): (Omit<KnowledgeRecall, "path"> & { path: string }) | null {

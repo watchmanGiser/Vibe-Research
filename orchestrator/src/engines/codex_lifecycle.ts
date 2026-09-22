@@ -77,8 +77,16 @@ export class CodexEngineLifecycle implements EngineLifecycle {
     ctx.log(stage, "hooks.summary", { attempt, ...sum });
     const marker = readStopFailed(cfg.runDir);
     if (marker && marker.stage === stage && marker.attempt === attempt) {
-      ctx.log(stage, "hooks.stop_terminated", { attempt, blocks: marker.blocks, problems: marker.problems.slice(0, 6) });
-      return `Stop 钩子终止本轮(拦截 ${marker.blocks} 次后仍不合格):${marker.problems.slice(0, 3).join("; ")}`;
+      ctx.log(stage, "hooks.stop_terminated", { attempt, blocks: marker.blocks, idle_streak: marker.idleStreak, problems: marker.problems.slice(0, 6) });
+      // blocks = 累计拦截次数,idleStreak = 最后连续多少次拦截之间没有新增计算。
+      // 只报 blocks 分不出"一直空转"和"一直在算却写不出产物",两种的补跑价值不一样。
+      // 🔴 idleStreak=1 的编码含义是"上一次拦截前刚有新计算落盘"(推进即归 1),不是"有 1 次空转"——
+      //    照字面印出来会把一个全程在算的 turn 说成空转,正好把要区分的两种情况说反。
+      //    0 = 日志来自没有这个字段的旧版本 ⇒ **不知道**,只能不说;当成"有新计算"是在替它下结论。
+      const idle = typeof marker.idleStreak !== "number" || marker.idleStreak <= 0 ? ""
+        : marker.idleStreak > 1 ? `,最后连续 ${marker.idleStreak} 次无新增计算`
+        : ",最后一次拦截前仍有新计算落盘";
+      return `Stop 钩子终止本轮(累计拦截 ${marker.blocks} 次${idle},仍不合格):${marker.problems.slice(0, 3).join("; ")}`;
     }
     return null;
   }

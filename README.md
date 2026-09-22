@@ -30,13 +30,6 @@ Vibe-Research 是一款面向个人投资者的 AI 投研工作台，把市场�
 
 ---
 
-## 作者正在寻找工作机会
-
-作者目前关注腾讯等大型科技企业在深圳的 AI 相关岗位，希望加入一支热爱 AI 开发的团队，继续从事 AI / Agent 产品开发、应用落地及 AI 咨询工作。
-
-联系：[simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
-
----
 
 ## 界面预览
 
@@ -406,12 +399,6 @@ npm run build --prefix desktop
 本项目只产出研究数据、分析框架、情景概率与裁决点，不提供任何投资动作建议。所有输出均不构成
 投资建议；第三方公开数据可能延迟、缺失或有误，使用者应自行核实并承担决策责任，同时遵守各数据源
 的使用条款。
-
-## 赞赏
-
-<p align="center">
-  <a href="https://buymeacoffee.com/simonlin1212"><img src="./assets/bmc-qr.png" width="180" alt="Buy Me a Coffee"></a>
-</p>
 
 ## License
 

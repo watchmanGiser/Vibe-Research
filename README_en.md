@@ -30,13 +30,6 @@ Vibe-Research is an AI research workbench for individual investors, bringing mar
 
 ---
 
-## The Author Is Open to Opportunities
-
-The author is open to AI roles at Tencent and other leading technology companies in Shenzhen, and hopes to join a team passionate about AI development. Areas of interest include AI / Agent product development, real-world deployment, and AI consulting.
-
-Contact: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
-
----
 
 ## Screenshots
 
@@ -423,12 +416,6 @@ This project produces research data, analytical frameworks, scenario probabiliti
 It does not provide investment-action instructions. Nothing produced by this project is investment advice.
 Third-party public data may be delayed, incomplete, or wrong. Users are responsible for verification, decisions,
 and compliance with each data source's terms.
-
-## Support
-
-<p align="center">
-  <a href="https://buymeacoffee.com/simonlin1212"><img src="./assets/bmc-qr.png" width="180" alt="Buy Me a Coffee"></a>
-</p>
 
 ## License
 
