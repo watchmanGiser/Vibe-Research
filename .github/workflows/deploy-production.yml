@@ -1,0 +1,172 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: ["Cross-platform verification"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "要部署的完整 40 位 commit SHA；留空使用 main 最新提交"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibe-research-production
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.sha }}
+      archive_sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.commit_sha || 'main' }}
+          fetch-depth: 0
+
+      - id: commit
+        name: Verify immutable commit is current reviewed main
+        run: |
+          sha="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          # 手动触发也只能部署 main 最新提交；禁止借任意 SHA 绕过 PR/CI，
+          # 并避免较旧的 CI 完成事件将线上回退到过时版本。
+          [[ "$sha" == "$main_sha" ]] || {
+            echo "只能部署当前 main 的 HEAD（当前 $main_sha，候选 $sha）" >&2
+            exit 2
+          }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            orchestrator/package-lock.json
+            desktop/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .agents/skills/data-access/scripts/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix orchestrator
+          npm ci --prefix desktop
+
+      - name: Verify release candidate
+        env:
+          VRA_PYTHON: python
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m pip install pytest -r .agents/skills/data-access/scripts/requirements.txt
+          npm test --prefix orchestrator
+          npm run typecheck --prefix orchestrator
+          npm test --prefix desktop
+          npm run build --prefix desktop
+          python -m pytest calc/tests -q
+          python -m pytest backtest/tests -q
+          python -m pytest .agents/skills/data-access/scripts/tests -q
+
+      - id: archive
+        name: Build immutable release package
+        run: |
+          chmod +x deploy/build-release.sh
+          deploy/build-release.sh "$RUNNER_TEMP/release-${{ steps.commit.outputs.sha }}.tar.gz" "${{ steps.commit.outputs.sha }}"
+          archive_sha256="$(sha256sum "$RUNNER_TEMP/release-${{ steps.commit.outputs.sha }}.tar.gz" | awk '{print $1}')"
+          echo "sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.commit.outputs.sha }}
+          path: ${{ runner.temp }}/release-${{ steps.commit.outputs.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    needs: package
+    if: ${{ needs.package.result == 'success' && vars.VIBE_PRODUCTION_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.package.outputs.commit_sha }}
+          path: ${{ runner.temp }}
+
+      - name: Configure pinned SSH identity
+        env:
+          VIBE_DEPLOY_SSH_KEY: ${{ secrets.VIBE_DEPLOY_SSH_KEY }}
+          VIBE_DEPLOY_HOST_KEY: ${{ secrets.VIBE_DEPLOY_HOST_KEY }}
+        run: |
+          [[ -n "$VIBE_DEPLOY_SSH_KEY" ]] || { echo "缺少 VIBE_DEPLOY_SSH_KEY" >&2; exit 2; }
+          [[ -n "$VIBE_DEPLOY_HOST_KEY" ]] || { echo "缺少 VIBE_DEPLOY_HOST_KEY" >&2; exit 2; }
+          install -m 0600 /dev/null "$RUNNER_TEMP/vibe-deploy.key"
+          printf '%s\n' "$VIBE_DEPLOY_SSH_KEY" > "$RUNNER_TEMP/vibe-deploy.key"
+          install -m 0600 /dev/null "$RUNNER_TEMP/known_hosts"
+          printf '%s\n' "$VIBE_DEPLOY_HOST_KEY" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Upload and activate release
+        env:
+          DEPLOY_HOST: ${{ vars.VIBE_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.VIBE_DEPLOY_USER }}
+          COMMIT_SHA: ${{ needs.package.outputs.commit_sha }}
+          ARCHIVE_SHA256: ${{ needs.package.outputs.archive_sha256 }}
+        run: |
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "VIBE_DEPLOY_HOST 格式错误" >&2; exit 2; }
+          [[ "$DEPLOY_USER" == "vibe-deploy" ]] || { echo "VIBE_DEPLOY_USER 必须是 vibe-deploy" >&2; exit 2; }
+          ssh_args=(-i "$RUNNER_TEMP/vibe-deploy.key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts")
+          archive="$RUNNER_TEMP/release-${COMMIT_SHA}.tar.gz"
+          remote_archive="/opt/vibe-research/incoming/release-${COMMIT_SHA}.tar.gz"
+          scp "${ssh_args[@]}" "$archive" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_archive}"
+          ssh "${ssh_args[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            sudo /usr/local/sbin/vibe-release "$COMMIT_SHA" "$remote_archive" "$ARCHIVE_SHA256"
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## 生产部署成功"
+            echo "- Commit: \`${{ needs.package.outputs.commit_sha }}\`"
+            echo "- URL: https://soufly.cn/vibe-research/"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-result:
+    needs: [package, deploy]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write result summary and notify Feishu
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          PACKAGE_STATUS: ${{ needs.package.result }}
+          DEPLOY_STATUS: ${{ needs.deploy.result }}
+          COMMIT_SHA: ${{ needs.package.outputs.commit_sha }}
+        run: |
+          {
+            echo "## 生产发布流程结果"
+            echo "- Commit: \`${COMMIT_SHA:-unknown}\`"
+            echo "- Package: ${PACKAGE_STATUS}"
+            echo "- Deploy: ${DEPLOY_STATUS}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$FEISHU_WEBHOOK_URL" ]] || exit 0
+          payload="$(jq -n \
+            --arg text "Vibe Research 发布流程\n打包：${PACKAGE_STATUS}｜部署：${DEPLOY_STATUS}\n${COMMIT_SHA:-unknown}\n${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{msg_type:"text",content:{text:$text}}')"
+          curl --fail --silent --show-error --max-time 15 \
+            -H 'Content-Type: application/json' \
+            -d "$payload" "$FEISHU_WEBHOOK_URL" || true
