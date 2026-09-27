@@ -41,5 +41,10 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     const latest = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
     assert.ok(Object.values(latest.entries).every(x => x.summary.length <= 800));
     assert.equal(fs.readFileSync(captured, 'utf8'), latestPublished, '超长模型输出被裁剪且仍未上传');
+    const injected = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
+    const one = Object.keys(injected.entries)[0]; injected.entries[one].text = 'malicious-source-copy';
+    fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(injected));
+    result = run(); assert.notEqual(result.status, 0, '缓存带原文字段必须拒绝');
+    assert.equal(fs.readFileSync(captured, 'utf8'), latestPublished);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

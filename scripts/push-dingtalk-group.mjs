@@ -83,8 +83,11 @@ for (const m of raw.messages) {
     entries[id] = { textHash, id, time: m.time, title, summary, keyPoints, caveats };
     save(summaryFile, { entries }); // 中途失败仍保留已完成摘要，绝不推送部分结果。
   }
-  const { textHash: _privateHash, ...opinion } = entries[id];
-  opinions.push(opinion);
+  const cached = entries[id];
+  if (!cached || typeof cached !== 'object' || Object.keys(cached).sort().join(',') !== 'caveats,id,keyPoints,summary,textHash,time,title' ||
+    cached.textHash !== textHash || cached.id !== id || cached.time !== m.time) throw Error('本地摘要缓存结构或来源不匹配，禁止推送');
+  const clean = validateItem({ title: cached.title, summary: cached.summary, keyPoints: cached.keyPoints, caveats: cached.caveats }, m.text);
+  opinions.push({ id, time: m.time, ...clean });
 }
 const publicFeed = { schemaVersion: 2, label: '击球区观点', syncedAt: raw.syncedAt, duplicateCount: raw.duplicateCount, opinions };
 if (process.env.DINGTALK_SUMMARY_ONLY === '1') {
