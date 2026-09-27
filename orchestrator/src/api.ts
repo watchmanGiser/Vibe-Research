@@ -20,6 +20,7 @@ import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, llmProbe, translateHead
 import { REPORT_MAX_BYTES } from "./report_library.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 import { fetchSemi, SemiUpstreamError } from "./semi.ts";
+import { fetchDingTalkGroup, DingTalkSnapshotError } from "./dingtalk_semi.ts";
 import { resumeUnifiedTask, runUnifiedTask } from "./task_service.ts";
 import { deepTargetResolverFor } from "./deep_target_registry.ts";
 
@@ -78,7 +79,7 @@ const SECURITY_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-r
 const HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; sandbox";
 
 /** Cookie 只对这些只读 GET 路由有效(白名单,而不是"任何 GET");其余路由只认 Bearer */
-export const COOKIE_GET_ROUTES: readonly RegExp[] = [/^\/ui$/, /^\/ui\/runs\/[^/]+$/, /^\/runs$/, /^\/runs\/[^/]+\/(viewer|report|status)$/, /^\/semi\/(health|status|tweets)$/];
+export const COOKIE_GET_ROUTES: readonly RegExp[] = [/^\/ui$/, /^\/ui\/runs\/[^/]+$/, /^\/runs$/, /^\/runs\/[^/]+\/(viewer|report|status)$/, /^\/semi\/(health|status|tweets|dingtalk)$/];
 
 /** `max` 只对明确需要大体积的路由放宽(导入要带 base64 文件);其余一律用默认 256KB */
 function readBody(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
@@ -192,6 +193,9 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
       if (req.method === "GET" && url.pathname === "/semi/health") return send(res, 200, await fetchSemi("/api/health"));
       if (req.method === "GET" && url.pathname === "/semi/status") return send(res, 200, await fetchSemi("/api/status"));
+      if (req.method === "GET" && url.pathname === "/semi/dingtalk") {
+        return send(res, 200, fetchDingTalkGroup(Number(q.limit ?? 200)));
+      }
       if (req.method === "GET" && url.pathname === "/semi/tweets") {
         const params = new URLSearchParams();
         if (q.limit) params.set("limit", q.limit);
@@ -394,6 +398,7 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       return send(res, 404, { error: "not found" });
     } catch (e) {
       if (e instanceof URIError) return send(res, 400, { error: "bad_path", message: "网址编码无效，请从栏目入口重新打开" });
+      if (e instanceof DingTalkSnapshotError) return send(res, e.status, { error: e.message });
       if (e instanceof ServiceError) {
         // 🔴 请求体过大要回 **413**,不能混在 400 里。
         //    上一版注释写着"照常回一个 413",代码却走统一的 400 —— 又一次**声称与代码不符**

@@ -1364,6 +1364,7 @@ export const api = {
   health: () => backend.health().then((h) => ({ ok: h.ok })),
   semiTweets: (limit = 100) => backend.semiTweets(limit),
   semiStatus: () => backend.semiStatus(),
+  dingtalkGroup: (limit = 200) => backend.dingtalkGroup(limit),
 
   quote: (codes: string, refresh = false) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean), refresh),
   valuation: valuationOf,
