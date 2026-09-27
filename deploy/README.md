@@ -53,7 +53,7 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 
 ## 击球区观点（仅 Nova 保存原文）
 
-Nova 用户级 `vibe-research-dingtalk-raw.timer` 每 30 分钟只运行 `scripts/sync-dingtalk-group.mjs`，将原文完整同步并去重，保存到权限受限的
+Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 模板（安装到 `~/.config/systemd/user/`）每 30 分钟只运行 `scripts/sync-dingtalk-group.mjs`，将原文完整同步并去重，保存到权限受限的
 `DINGTALK_LOCAL_SNAPSHOT_FILE`，独立的 `scripts/push-dingtalk-group.mjs` 在模型提供方许可确认后同步本地原文，并只对超过 120 字的观点调用 Nova 上配置的 Codex GPT CLI
 （可通过 `DINGTALK_GPT_BIN` 指定）；模型将第三方观点整理为主题、概述、要点和待核验风险。原文不自动按 90 天窗口删除。
 原文超过 200000 字、模型调用失败、输出不合规时停止推送，不会退回上传原文。

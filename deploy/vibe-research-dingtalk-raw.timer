@@ -1,0 +1,12 @@
+[Unit]
+Description=每 30 分钟只在 Nova 本地同步原始资料
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=30m
+Persistent=true
+RandomizedDelaySec=3m
+Unit=vibe-research-dingtalk-raw.service
+
+[Install]
+WantedBy=default.target
