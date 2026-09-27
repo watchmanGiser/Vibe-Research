@@ -1,6 +1,6 @@
 /** 文件工具:原子写入(临时文件 → fsync → 替换)、sha256、JSON 读写、追加 JSONL。*/
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -37,9 +37,17 @@ foreach ($rule in $acl.Access) {
 exit 0
 `;
 
+function windowsAclEnv(file: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, VRA_PRIVATE_FILE: path.resolve(file) };
+  // A parent PowerShell 7 process exports its module search path. Windows
+  // PowerShell 5.1 cannot load those Security modules; use its own defaults.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === "psmodulepath") delete env[key];
+  return env;
+}
+
 function windowsAcl(script: string, file: string): { status: number | null; error?: Error } {
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
-    env: { ...process.env, VRA_PRIVATE_FILE: path.resolve(file) }, encoding: "utf8", windowsHide: true, timeout: 10_000,
+    env: windowsAclEnv(file), encoding: "utf8", windowsHide: true, timeout: 10_000,
   });
   return { status: result.status, error: result.error };
 }
@@ -49,6 +57,16 @@ export function restrictPrivateFile(file: string): void {
   if (process.platform !== "win32") { fs.chmodSync(file, 0o600); return; }
   const result = windowsAcl(WINDOWS_PRIVATE_ACL, file);
   if (result.error || result.status !== 0) throw new Error(`无法收紧 Windows 文件权限(${result.error?.message ?? `exit ${result.status}`})`);
+}
+
+/** Request-path ACL setup must not block unrelated API requests on Windows. */
+export async function restrictPrivateFileAsync(file: string): Promise<void> {
+  if (process.platform !== "win32") { await fs.promises.chmod(file, 0o600); return; }
+  await new Promise<void>((resolve, reject) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_PRIVATE_ACL],
+      { env: windowsAclEnv(file), encoding: "utf8", windowsHide: true, timeout: 10_000, killSignal: "SIGKILL" },
+      error => error ? reject(new Error("无法收紧 Windows 文件权限")) : resolve());
+  });
 }
 
 export function privateFilePermissions(file: string): { secure: boolean; detail: string } {

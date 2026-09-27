@@ -50,6 +50,18 @@ def test_calculation_id_identity_rules():
     assert zero_a == zero_b  # -0.0 / 0.0 规范化
 
 
+@pytest.mark.parametrize("kind", ["history_csv", "history_json"])
+@pytest.mark.parametrize("alias", ["raw/./x", "raw/sub/../x", "raw//x", "raw/../raw/x"])
+def test_series_paths_reject_ambiguous_spelling_before_creating_an_identity(tmp_path, kind, alias):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "sub").mkdir()
+    (raw / "x").write_text("v\n10\n20\n" if kind == "history_csv" else '{"rows":[{"close":10},{"close":20}]}')
+    spec = {"raw_ref": alias, **({"column": "v"} if kind == "history_csv" else {"rows_path": "rows", "columns": {"date": "date", "close": "close"}})}
+    with pytest.raises(ValueError, match="规范相对路径"):
+        cli.resolve_inputs({"history": {kind: spec}}, str(tmp_path))
+
+
 def test_not_meaningful_exit_two():
     rc, out = run("peg", "--args", '{"pe": 30, "cagr": 0}')
     assert rc == 2 and out["output"]["status"] == "not_meaningful" and out["output"]["value"] is None
@@ -118,6 +130,16 @@ def test_history_csv_loading_and_identity(tmp_path):
     spec2["history"]["history_csv"]["where"] = {}
     rc, out3 = run("percentile_rank", "--args", json.dumps(spec2), "--run-dir", str(run_dir), "--evidence", "ev-aaaaaa")
     assert out3["calculation_id"] not in (id1, out2["calculation_id"])
+
+
+def test_history_csv_period_tracks_filtered_dates(tmp_path):
+    run_dir = _make_run_dir(tmp_path)
+    spec = {"history": {"history_csv": {"raw_ref": "raw/pe.csv", "column": "peTTM",
+            "where": {"tradestatus": "1"}, "date_column": "date"}}, "current": 25}
+    rc, out = run("percentile_rank", "--args", json.dumps(spec), "--run-dir", str(run_dir))
+    assert rc == 0
+    assert out["inputs_resolved"]["history"]["period"] == "2025-01-01..2025-01-25"
+    assert out["inputs_resolved"]["history"]["date_column"] == "date"
 
 
 def test_history_csv_path_safety(tmp_path):

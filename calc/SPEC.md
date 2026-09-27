@@ -57,7 +57,7 @@
 - TTM 序列同理:`ttm_sum / ttm_yoy / qoq(…, unit=元, money=true)`。
 - TTM 同比主用 `net_profit_parent_cum`(归母,与一致预期 EPS 同口径);扣非口径并列作交叉。
 - 前瞻 CAGR:`eps_t` = FY T 一致预期均值,`eps_t_plus_n` = FY T+2 均值,`years=2`;T = 当前财年(Asia/Shanghai)。
-- 分位:`percentile_rank(history={"history_csv": {raw_ref: baostock CSV, column: peTTM, where: {tradestatus: "1"}}}, current = pe_ttm)`。
+- 分位:`percentile_rank(history={"history_csv": {raw_ref: baostock CSV, column: peTTM, where: {tradestatus: "1"}, date_column: date}}, current = pe_ttm)`。
 - 判读阈值默认 10 个百分点,可配置;"锚"只用于消化年数,本产品不输出价格锚(红线)。
 
 ## 2b. 技术指标与筹码分布(indicators.py,0.3.0 新增;数值不解读)

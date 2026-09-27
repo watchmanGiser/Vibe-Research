@@ -32,18 +32,20 @@ const readText = (k: string): string | null => {
     return null; // 隐私模式 / 配额满时会**抛异常**，不是返回 null
   }
 };
-const writeText = (k: string, v: string): void => {
+const writeText = (k: string, v: string): boolean => {
   try {
     localStorage.setItem(k, v);
+    return true;
   } catch {
-    /* 存不下就算了：本次会话照常用，只是关掉页面不被记住 */
+    return false;
   }
 };
-const dropText = (k: string): void => {
+const dropText = (k: string): boolean => {
   try {
     localStorage.removeItem(k);
+    return true;
   } catch {
-    /* 同上 */
+    return false;
   }
 };
 
@@ -90,13 +92,12 @@ export function dropChat(key: string): void {
   dropText(EPOCH_KEY + key);
 }
 
-function saveChat(key: string, msgs: AiMsg[]): void {
+export function saveChat(key: string, msgs: AiMsg[]): boolean {
   const keep = completeTurns(msgs);
   if (!keep.length) {
-    dropText(CHAT_KEY + key);
-    return;
+    return dropText(CHAT_KEY + key);
   }
-  writeText(CHAT_KEY + key, JSON.stringify(keep.slice(-MAX_PERSISTED)));
+  return writeText(CHAT_KEY + key, JSON.stringify(keep.slice(-MAX_PERSISTED)));
 }
 
 /**
@@ -127,6 +128,7 @@ export interface AiChat {
   key: string;
   loading: boolean;
   err: string | null;
+  info: string | null;
   /** 发一条；`decorate` 让调用方在真正发出去之前给消息加上下文（界面上仍显示原话） */
   submit: (text: string, decorate?: (q: string) => string) => Promise<void>;
   clear: () => void;
@@ -144,6 +146,8 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   const [chat, setChat] = useState<{ key: string; msgs: AiMsg[] }>(() => ({ key, msgs: key ? loadChat(key) : [] }));
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /**
    * 提交权的**同步**锁。
@@ -171,6 +175,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
     submittingRef.current = null;
     setLoading(false);
     setErr(null);
+    setInfo(null);
     setEpoch(Number(readText(EPOCH_KEY + key) ?? 0) || 0);
     setChat({ key, msgs: key ? loadChat(key) : [] });
   }, [key]);
@@ -178,21 +183,33 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   // 落盘。守卫见上面 chat state 的注释：换 key 那一帧 chat.key 仍是旧值，与 key 不等
   useEffect(() => {
     if (!key || chat.key !== key) return;
-    saveChat(key, chat.msgs);
+    const saved = saveChat(key, chat.msgs);
+    setStorageWarning(!saved
+      ? "浏览器存储空间不足或不可用，本次聊天未能保存。请先复制重要内容，再刷新或关闭页面。"
+      : completeTurns(chat.msgs).length > MAX_PERSISTED
+        ? "此对话仅在浏览器保留最近 20 轮。重要结论请及时存入沉淀或复制备份。"
+        : null);
   }, [key, chat]);
 
   useEffect(() => () => abortRef.current?.abort(), []); // 卸载兜底
 
   const abort = useCallback(() => {
+    const hadRequest = !!abortRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
     submittingRef.current = null;    // 不放锁的话，切走再切回来会永远发不出去
     setLoading(false);
-  }, []);
+    if (hadRequest) {
+      setMsgs((m) => completeTurns(m));
+      setErr(null);
+      setInfo("已停止等待，并已请求中止本轮。已启动的后台研究需在研究页单独取消。");
+    }
+  }, [setMsgs]);
 
   const clear = useCallback(() => {
     abort();
     setErr(null);
+    setInfo(null);
     setMsgs([]); // saveChat 见空数组会删键，不留空壳
     // 后端也换一条线程：只清界面的话，模型还记着刚才聊过什么
     setEpoch((e) => {
@@ -213,6 +230,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
       const ac = new AbortController();
       submittingRef.current = ac;      // 抢到提交权的是这一次
       setErr(null);
+      setInfo(null);
       setMsgs((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "", partial: true }]);
       setLoading(true);
 
@@ -251,7 +269,9 @@ export function useAiChat(key: string, send: AiSend): AiChat {
             // 只删空气泡会留下一个孤立的提问，下一轮就是连续两条用户发言
             return m.slice(0, m[m.length - 2]?.role === "user" ? -2 : -1);
           });
-          if (!ac.signal.aborted) setErr(e instanceof Error ? e.message : "对话失败");
+          if (!ac.signal.aborted && !(e instanceof Error && e.name === "AbortError")) {
+            setErr(e instanceof Error ? e.message : "对话失败");
+          }
         }
       } finally {
         // 🔴 只放**自己**那把锁。无条件放的话：A 被 abort → 锁已放 → B 上锁 →
@@ -267,5 +287,5 @@ export function useAiChat(key: string, send: AiSend): AiChat {
     [loading, setMsgs],
   );
 
-  return { msgs: chat.msgs, key: chat.key, loading, err, submit, clear, abort };
+  return { msgs: chat.msgs, key: chat.key, loading, err, info: [storageWarning, info].filter(Boolean).join(" ") || null, submit, clear, abort };
 }

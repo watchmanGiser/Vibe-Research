@@ -20,7 +20,7 @@ description: 成长股估值口径手册(A 股为主,US/HK 通用):扣非×4 年
 |---|---|---|---|
 | **扣非×4 年化 PE**(主) | 总市值 ÷ (最新单季扣非净利润 × 4) → `pe_deducted_annualized(total_market_cap, cap_unit, latest_quarter_deducted_profit, profit_unit)` | 抓"当前运行速率",对快速成长股比 TTM 更不滞后 | **必用扣非、不用归母**(单季×4 会把投资收益 / 补助 / 减值等一次性损益放大 4 倍);**季节性**:淡季单季×4 会高估 PE、旺季单季×4 会低估——淡旺季方向只能从**该公司自己的单季序列**判断(earnings-analysis §3),不得套用行业印象;判读时必须写明最新单季是哪个季度与方向性偏差 |
 | 前瞻 PE | 现价 ÷ 一致预期 EPS(FY T 均值)→ `forward_pe(price, eps_forecast)` | 分析师已处理季节性;与扣非×4 对照看"市场在为哪一年定价" | 依赖一致预期质量(机构数 ≥ 3;见 §3) |
-| TTM PE + 历史分位 | 总市值 ÷ 近 4 季净利和 → `pe_ttm_from_parts(...)`,并与数据源 pe_ttm 交叉;分位 `percentile_rank(history={"history_csv": {"raw_ref": <PE 历史 raw 文件>, "column": "peTTM", "where": {"tradestatus": "1"}}}, current=pe_ttm)`(CLI 序列输入形式见 calc/SPEC.md §3;不是把 history_csv / where 当顶层参数) | 历史位置参考;分位 < 20 个有效样本 → not_meaningful | 对快速成长股**滞后偏高**(把利润低的旧季度算进去);只作参考列,不作主判 |
+| TTM PE + 历史分位 | 总市值 ÷ 近 4 季净利和 → `pe_ttm_from_parts(...)`,并与数据源 pe_ttm 交叉;分位 `percentile_rank(history={"history_csv": {"raw_ref": <PE 历史 raw 文件>, "column": "peTTM", "where": {"tradestatus": "1"}, "date_column": "date"}}, current=pe_ttm)`(CLI 序列输入形式见 calc/SPEC.md §3;不是把 history_csv / where 当顶层参数) | 历史位置参考;分位 < 20 个有效样本 → not_meaningful | 对快速成长股**滞后偏高**(把利润低的旧季度算进去);只作参考列,不作主判 |
 
 T 的定义:T = 当前财年(Asia/Shanghai 当日所在年)。
 

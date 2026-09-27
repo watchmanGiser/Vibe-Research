@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -26,26 +27,28 @@ test("🔴 前提：这几个文件确实在 —— 改名 / 搬走时不许静�
 
 test("🔴 传输层自己带上用户配置 —— 不靠每个调用方记得传", () => {
   const src = read("backend.ts");
-  assert.ok(/import \{[^}]*readUserLlm[^}]*\} from "\.\/llmStore(?:\.ts)?"/.test(src), "backend.ts 必须自己去读用户配置");
-  // 读配置集中在 requestLlm，chat 与标题翻译两条传输入口都必须调用它。
+  assert.ok(/import \{[^}]*readAiRuntime[^}]*\} from "\.\/llmStore(?:\.ts)?"/.test(src), "backend.ts 必须自己去读全局 AI 运行配置");
+  // 读配置集中在 requestRuntime，chat 与标题翻译两条传输入口都必须调用它。
   // 只看整份文件会假绿：helper 留着、真正的请求入口绕开它照样能过。
-  const helper = /function requestLlm\([^)]*\)[^{]*\{([\s\S]*?)\n\}\n\nasync function call/.exec(src);
-  assert.ok(helper, "没解析到 requestLlm 的实现，断言等于没做");
+  const helper = /function requestRuntime\([^)]*\)[^{]*\{([\s\S]*?)\n\}\n\nasync function call/.exec(src);
+  assert.ok(helper, "没解析到 requestRuntime 的实现，断言等于没做");
   const helperBody = helper[1]!;
-  assert.ok(/readUserLlm\(\)/.test(helperBody), "传输层必须在调用方没给时去读用户配置");
+  assert.ok(/readAiRuntime\(\)/.test(helperBody), "传输层必须读取全局 AI 来源与 Agent 开关");
   assert.ok(/"broken"/.test(helperBody) && /"unavailable"/.test(helperBody), "必须把「坏了」「读不到」与「没配」分开处理");
   assert.ok(/throw new ApiError/.test(helperBody), "坏了 / 读不到要报出来，不能静默回落");
+  assert.ok(/"none"/.test(helperBody) && /"ai_not_configured"/.test(helperBody), "真没配也必须引导接入 AI，不能借后端默认值替用户选择");
 
   const seg = /chat:\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
   assert.ok(seg, "没解析到 backend.chat 的实现，断言等于没做");
   const body = seg[1]!;
-  assert.ok(/requestLlm\(llm\)/.test(body), "chat 必须走统一的用户配置读取入口");
+  assert.ok(/requestRuntime\(llm\)/.test(body), "chat 必须走统一的用户配置读取入口");
   const translate = /translateHeadlines:\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
-  assert.ok(translate && /requestLlm\(llm\)/.test(translate[1]!), "标题翻译也必须走同一入口，不能静默换模型");
-  // 🔴 带不带 llm 按 `!== undefined` 判，不按真值判：真值判会把显式的 null / "" 悄悄丢掉，
-  //    后端的形状校验就压根不会执行 —— 后端刚堵上的那条后门，在这个兄弟编译点上又开了。
-  assert.ok(/use !== undefined \? \{ llm: use \}/.test(body), "带不带 llm 必须按 !== undefined 判");
-  assert.ok(!/\.\.\.\(use \? \{ llm/.test(body), "不许用真值判 —— 显式 null 会被静默丢掉");
+  assert.ok(translate && /requestRuntime\(llm\)/.test(translate[1]!), "标题翻译也必须走同一入口，不能静默换模型");
+  // 🔴 helper 内按 `!== undefined` 判调用方覆盖，不按真值判：真值判会把显式 null 悄悄丢掉，
+  //    后端的形状校验就压根不会执行。
+  assert.ok(/llm !== undefined/.test(helperBody), "调用方覆盖必须按 !== undefined 判");
+  assert.ok(!/if \(llm\)/.test(helperBody), "不许用真值判 —— 显式 null 会被静默丢掉");
+  assert.ok(/executionMode: runtime\.executionMode, llm: runtime\.llm/.test(body), "chat 必须同时发送全局执行方式与 AI 来源");
 });
 
 test("🔴 「已实测」不许拿「目录里有这个文件」当判据", () => {
@@ -114,6 +117,34 @@ test("🔴 前端「这份配置能不能用」的口径必须与后端一致 �
     try { resolveRuntimeProvider(REPO_ROOT, DATA, c, {}); } catch { back = false; }
     // 前端严 ⇒ 能用的配置被判「坏了」；前端松 ⇒ 界面说"已配置"、一提问才报错。两种都是分岔。
     assert.equal(front, back, `口径不一致:${JSON.stringify(c)} 前端=${front} 后端=${back}`);
+  }
+});
+
+test("🔴 Base URL 不得携带查询凭据或 fragment", async () => {
+  const { resolveRuntimeProvider, RuntimeProviderError } = await import("../src/runtime_provider.ts");
+  const REPO_ROOT = path.resolve(LIB, "..", "..", "..", "..", "..");
+  const DATA = path.join(REPO_ROOT, ".local");
+  for (const baseURL of ["https://gateway.example/v1?api_key=secret", "https://gateway.example/v1#secret"]) {
+    assert.throws(
+      () => resolveRuntimeProvider(REPO_ROOT, DATA, { provider: "custom", baseURL, apiKey: "separate-key", model: "m" }, {}),
+      (error: unknown) => error instanceof RuntimeProviderError && error.code === "bad_base_url" && !error.message.includes("secret"),
+    );
+  }
+});
+
+test("🔴 未显式传 llm 时，路由指纹绑定真实后台默认来源而不是固定占位符", async () => {
+  const { runtimeSourceFingerprint } = await import("../src/runtime_provider.ts");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-default-fingerprint-"));
+  try {
+    fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({
+      provider: { profile: "deepseek", auth: "api_key" },
+      defaults: { model: "deepseek-chat" },
+    }));
+    const a = runtimeSourceFingerprint(REPO, root, undefined, { DEEPSEEK_API_KEY: "route-key-a" });
+    const b = runtimeSourceFingerprint(REPO, root, undefined, { DEEPSEEK_API_KEY: "route-key-b" });
+    assert.notEqual(a, b, "后台默认 key 变化后，旧路由指纹必须失效");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

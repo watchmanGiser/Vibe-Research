@@ -1,6 +1,6 @@
 /**
  * hooks v0(Phase 0 第 5 步,执行层):把纪律从"提示 + 事后校验"再往前推一层——
- *  - Stop 钩子:每个 turn 收工前检查本阶段产物是否齐全 / 过阶段校验,缺则 block(agent 在同一 turn 内继续补,最多 MAX_STOP_BLOCKS 次),仍不合格则 continue:false 终止本轮并留标记(编排器判该 turn 失败并补跑)
+ *  - Stop 钩子:每个 turn 收工前检查本阶段产物是否齐全 / 过阶段校验,缺则 block(agent 在同一 turn 内继续补);两条上限任一到顶(无推进空转 MAX_STOP_BLOCKS 次,或累计拦截 MAX_TOTAL_STOP_BLOCKS 次)仍不合格则 continue:false 终止本轮并留标记(编排器判该 turn 失败并补跑)
  *  - PreToolUse 钩子:agent 每条 shell / apply_patch 调用执行前做行为检查(自跑取数脚本 / 读禁区 / 写受保护产物 / 联网),命中即 block
  * 零 fork:钩子是 Codex 0.149 原生 lifecycle hooks(feature "hooks" 默认开启),配置写在**产品自己的 CODEX_HOME**(hooks.json),
  * 非托管钩子必须在同一 CODEX_HOME 的 config.toml 里登记 trusted_hash 才会执行——这里按 Codex 源码复刻其哈希算法(codex-rs/hooks/src/engine/discovery.rs hook_hash +
@@ -20,9 +20,33 @@ export const HOOK_CONTEXT_REL = path.join(".vibe", "hook-context.json");
 export const HOOK_LOG_REL = path.join(".vibe", "hooks.log");
 /** Stop 钩子多次拦截仍不合格时写的终止标记(编排器据此把该 turn 判为失败,进入补跑) */
 export const STOP_FAILED_REL = path.join(".vibe", "stop-failed.json");
-/** 同一 (stage, attempt) 内 Stop 最多 block 的次数(给 agent 两次当场修的机会),之后终止本轮 */
-export const MAX_STOP_BLOCKS = 2;
-export interface StopFailedMarker { stage: string; attempt: number; problems: string[]; blocks: number; ts: string }
+/** 同一 (stage, attempt) 内 Stop 最多 block 的**空转**次数,之后终止本轮。
+ *  2 次太紧:合规工作流是"先攒 N 轮确定性计算(拆季→最新季→滚动合计→同比→环比)→
+ *  最后一步才写 stage 文件",2026-09-05 一次真实 run 实测计算阶段 3-5 轮全对、
+ *  stage 文件还没写就被预算烧尽终止,产物在后续轮才补写落盘,编排器又不在事后复核
+ *  ⇒ 阶段永久 failed(收工时机误杀,不是能力问题)。
+ *  6 次给合规攒算流留足预算;配合 stop.ts 的**推进感知**(两次拦截之间有新落盘且是
+ *  合法计算记录 ⇒ 计数回 **1**,不是 0 —— 1 的含义就是"上一次拦截前刚有新计算落盘"),
+ *  这里的上限只约束"无推进的空转",不是总拦截数。 */
+export const MAX_STOP_BLOCKS = 6;
+/** 同一 (stage, attempt) 内 Stop **累计**能 block 的次数硬上限(不论有没有推进),之后终止本轮。
+ *  推进感知把空转计数按回 1,所以"每轮落一条合法计算、但永远不写 stage 文件"的 turn 不会被上面那条拦住;
+ *  这条是兜底:让单个 turn 的拦截次数始终有界,别把整轮额度耗在同一阶段上。
+ *  20 远高于实测的合规攒算流(2026-09-05 那次是 3-5 轮),正常运行碰不到它。 */
+export const MAX_TOTAL_STOP_BLOCKS = 20;
+/** blocks = 本 (stage, attempt) 累计拦截次数;
+ *  idleStreak = **终止前最后一次拦截**时的连续无推进次数(1 = 那次拦截前刚有新计算落盘)。
+ *  两个都写:只看其一分不出"一直空转"和"一直在算却写不出产物"。
+ *  🔴 与 hooks.log 里那条 decision:"stop" 的 idleStreak **不一定相等**,别"顺手统一":
+ *    - 空转终止(idleStreak > MAX_STOP_BLOCKS)时差 1 —— 日志记的是**本次判定值**
+ *      (本次若也算一次拦截会是第几次空转,正是它越线才终止),marker 记**已经发生过的**;
+ *      统一成日志那个值会让文案多算一次空转。
+ *    - 累计上限终止(blocks >= MAX_TOTAL_STOP_BLOCKS)时两者**无固定关系**:marker 记的是
+ *      最后一次拦截时的值,而终止那一刻的判定不在其中 —— 终止前刚落一条新计算时,
+ *      日志是 1 而 marker 可以是任意值(实测 marker 4 / 日志 1)。
+ *      所以"永远差 1"是错的,两个值都不能拿来反推另一个。
+ *  0 = 不知道(日志来自没有这个字段的旧版本),不是"没有空转",读的人要按不知道处理。 */
+export interface StopFailedMarker { stage: string; attempt: number; problems: string[]; blocks: number; idleStreak?: number; ts: string }
 export function readStopFailed(runDir: string): StopFailedMarker | null { return readJsonIfExists<StopFailedMarker>(path.join(runDir, STOP_FAILED_REL)); }
 export function clearStopFailed(runDir: string): void { const p = path.join(runDir, STOP_FAILED_REL); if (fs.existsSync(p)) fs.rmSync(p); }
 export const STOP_TIMEOUT_SEC = 120;
@@ -198,7 +222,7 @@ export function readHookContext(runDir: string): HookContext | null {
 }
 
 /** 钩子自己的日志(每行一个 JSON;诊断用,不是真理源) */
-export interface HookLogEntry { ts: string; hook: "stop" | "pre_tool_use"; stage?: string; attempt?: number; decision: "allow" | "block" | "stop" | "error"; reason?: string; tool?: string; command?: string; stop_hook_active?: boolean }
+export interface HookLogEntry { ts: string; hook: "stop" | "pre_tool_use"; stage?: string; attempt?: number; decision: "allow" | "block" | "stop" | "error"; reason?: string; tool?: string; command?: string; stop_hook_active?: boolean; /** Stop 推进感知:该次拦截时合法计算记录的条数与指纹(整套 id 的哈希,不存 id 列表——那会让日志随计算数膨胀,而这个日志每个 turn 都整份读) + 连续无推进空转计数 */ calcCount?: number; calcFp?: string; idleStreak?: number }
 export function appendHookLog(runDir: string, entry: HookLogEntry): void {
   const p = path.join(runDir, HOOK_LOG_REL);
   fs.mkdirSync(path.dirname(p), { recursive: true });

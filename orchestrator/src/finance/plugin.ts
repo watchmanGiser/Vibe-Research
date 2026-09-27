@@ -67,6 +67,7 @@ export const FINANCE_PLUGIN: Plugin = {
 
   /** report.md 必须出现的章节标题(SOP §5 骨架) */
   reportSections: ["结论摘要", "事实", "推断", "估值", "风险与反证", "裁决点", "数据缺口"],
+  fidelityExcludedSections: ["数据缺口"],
 
   evidence: {
     /** 证券市场代码 */
@@ -113,6 +114,7 @@ export const FINANCE_PLUGIN: Plugin = {
    *    就等于让双方引用别人的观点当证据,而对方无法核实。
    */
   debate: {
+    outputLanguage: "zh",
     dossierEndpoints: ["tx_quote", "fetch_profile", "fetch_financials", "indicators_cn"],
     stages: [
       {
@@ -167,13 +169,11 @@ export const FINANCE_PLUGIN: Plugin = {
   },
 
   /** 变化提醒默认盯的证据字段 */
+  alertObservationFields: ["price", "total_market_cap", "pe_ttm", "pb", "pe_ttm_latest"],
   alertFields: ["price", "total_market_cap", "pe_ttm", "pb", "eps_consensus_mean", "eps_analyst_count",
     "revenue_cum", "net_profit_parent_cum", "net_profit_deducted_cum", "margin_financing_balance_latest",
     "shareholder_count", "lockup_upcoming_count", "dragon_tiger_count", "block_trade_count",
     "research_report_count_1y", "pe_ttm_latest", "announcement_title"],
-
-  /** 用户用这个垂类术语指向已上传资料时，普通对话允许全文召回。 */
-  reportIntentTerms: ["研报"],
 
   /** 标准列的表头显示名 */
   standardColumnLabels: {
@@ -331,15 +331,23 @@ export const FINANCE_PLUGIN: Plugin = {
    * ⚠️ 回测要先取数(三个市场、几年日线)再逐 bar 撮合,比单次取数慢得多 ⇒ 单独给 5 分钟。
    */
   tools: {
-    backtest: { label: "回测", module: "backtest.cli", timeoutMs: 300_000 },
+    backtest: { label: "回测", module: "backtest.cli", requiresAgent: true, timeoutMs: 300_000 },
     // 🔴 让**界面也能调到确定性计算库**，而不是自己再抄一份公式。
     //    此前 desktop 的 api.ts 手写了 PE / CAGR / PEG / 消化年数 ——
     //    于是 `calc/` 里改对了口径，桌面端不会跟着变（"两套事实与计算链路"）。
     //    最典型的后果：calc 的正式口径是**四情景**消化年数（30/25/22/18 倍锚），
     //    界面却写死 30 倍出一个数，把最乐观那一档当成了既定事实。
     //    ⚠️ 纯计算、不联网、不落盘，所以超时给得短 —— 它要是跑几秒，说明调错了东西。
-    calc: { label: "确定性计算", module: "calc.tool", timeoutMs: 20_000 },
+    calc: { label: "确定性计算", module: "calc.tool", requiresAgent: false, timeoutMs: 20_000 },
   },
 
+  /** 普通对话的资料召回:金融文档常见的类型词不算文件名主体;「研报」是明确指向资料库的说法(#39) */
+  reportRecall: {
+    // 「研报」本身就是明确指向资料库的说法;年报 / 财报 / 季报要带明确指称(这份 / 里 / 中)才算,「年报季到了」不算(Codex r16 P2)
+    intent: /研报|(?:这份|那份|这个|那个|上面的|我的|上传的)\s*(?:年报|财报|季报|中报|半年报|一季报|三季报)|(?:年报|财报|季报|中报|半年报|一季报|三季报)[里中内]/,
+    titleStopwords: ["年报", "中报", "季报", "半年报", "一季报", "三季报", "财报", "研报", "个股", "行业", "板块", "投资", "投资者", "电话会", "路演", "业绩说明会", "earnings", "call"],
+    // 「总结所有研报」「比较这六份财报」:这些名词也指"一份资料",参与全库 / 数量判定(Codex r26 P1)
+    documentNouns: ["研报", "年报", "财报", "季报", "中报", "半年报", "公告", "纪要", "点评"],
+  },
   lexicon: FINANCE_LEXICON,
 };

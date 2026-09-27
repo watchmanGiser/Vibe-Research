@@ -151,9 +151,9 @@ function GpuRentPanel() {
   const [activeMonth, setActiveMonth] = useState(0);
 
   // 打开先给存档、后台再刷（见 core/data/useArchiveThenRefresh）：
-  // 后端按 24 小时快照策略决定是否真取；真取时历史曲线只拉最后一天之后的增量。
+  // 这一页要拉一年曲线 + 三张卡的挂单数 + 十几个远期合约，干等好几十秒没有必要。
   const { data, err, loading, refreshing, staleNote, refresh } =
-    useArchiveThenRefresh<GpuRentData>(() => api.gpuRent(), []);
+    useArchiveThenRefresh<GpuRentData>((r) => (r ? api.gpuRentRefresh() : api.gpuRent()), []);
 
   const hasData = !!data?.generated_at;
   const fw = data?.forward;
@@ -241,7 +241,7 @@ function GpuRentPanel() {
         {
           name: "已结算月实际（区间中点）", type: "line" as const, data: actualData,
           symbol: "circle", symbolSize: 7, lineStyle: { width: 2 },
-          itemStyle: { color: "#2dd4bf" }, connectNulls: false,
+          itemStyle: { color: "#8095b5" }, connectNulls: false,
         },
         {
           name: "市场预期中位", type: "line" as const, data: expectedData,

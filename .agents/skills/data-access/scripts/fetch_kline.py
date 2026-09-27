@@ -81,6 +81,10 @@ def main() -> None:
             if not good or to_float(good[-1][2]) is None:
                 raise ValueError("无合格 K 线行或最新收盘不可解析")
             last = good[-1]
+            res["evidence"].append(evidence(script=SCRIPT, symbol=digits, market=market, field="volume_latest",
+                                            value=to_float(last[5]), unit="源单位", period=last[0], source=src, endpoint=ep,
+                                            raw_ref=raw["raw_ref"], currency="n/a", adjustment="not_applicable",
+                                            note="上游 K 线 vol 原值,未换算;仅用于正成交量校验,不可跨源比较数量"))
             res["evidence"].append(evidence(script=SCRIPT, symbol=digits, market=market, field="close_qfq_latest",
                                             value=to_float(last[2]), unit="元", period=last[0], source=src, endpoint=ep,
                                             raw_ref=raw["raw_ref"], adjustment="qfq"))

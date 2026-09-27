@@ -22,12 +22,23 @@ function buildMinimal(kind: string): Record<string, unknown> {
     if (p?.enum) out[r] = p.enum[0];
     else if (p?.type === "number") out[r] = 1;
     else if (r === "symbol") out[r] = "300308";
+    else if ((p as { format?: string })?.format === "date") out[r] = "2026-09-01";
     else out[r] = "x";
   }
   return out;
 }
 
 const anyKind = (): string => Object.keys(kinds())[0]!;
+
+test("清仓名称备注可选、真实保存重读，旧记录兼容，长备注不截断而明确拒绝", () => {
+  const root = tmpRoot();
+  const base = { symbol: "600519", closed_at: "2026-09-01", price: 1200, shares: 1, cost: 1000 };
+  upsertRecord(root, "closed_position", base);
+  const saved = upsertRecord(root, "closed_position", { ...base, name: "贵州茅台", note: "核对中报后复盘" });
+  assert.equal(listRecords(root, "closed_position").find(r => r.id === saved.id)?.note, "核对中报后复盘");
+  assert.throws(() => upsertRecord(root, "closed_position", { ...base, note: "字".repeat(1001) }), LedgerError);
+  assert.equal(listRecords(root, "closed_position").length, 2);
+});
 
 test("契约:ledger 是可选槽位 —— 不声明台账的垂类必须仍然合法", () => {
   // 第二垂类验收装置里的包就没有台账。required 里出现 ledger = 把一个可选能力变成了强制项。

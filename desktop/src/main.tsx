@@ -43,9 +43,15 @@ function fatal(message: string, detail: string) {
   p.textContent = detail;
   p.style.cssText = "margin:0 0 1rem;color:#a1a1aa;white-space:pre-wrap";
   const tip = document.createElement("p");
-  tip.textContent = "先启动编排器 API,再刷新这一页。";
+  tip.textContent = "macOS / Linux 请运行 scripts/start；Windows 请运行 scripts\\start.cmd。";
   tip.style.cssText = "margin:0;color:#a1a1aa";
-  box.append(h, p, tip);
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "重新连接";
+  retry.style.cssText =
+    "margin-top:1rem;padding:.55rem .85rem;color:#fff;background:#e4572e;border:0;border-radius:8px;cursor:pointer";
+  retry.addEventListener("click", () => window.location.reload());
+  box.append(h, p, tip, retry);
   root!.append(box);
 }
 

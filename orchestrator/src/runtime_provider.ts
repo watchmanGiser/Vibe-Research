@@ -10,13 +10,16 @@
  *    开源版（已被真实用户验证）的做法是让用户自己粘 key，
  *    这一层就是把那条路接过来。
  */
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import {
-  BUILTIN_OPENAI_PROFILE, PROVIDER_ID_RE, loadProviderProfile, validateProfile,
+  BUILTIN_OPENAI_PROFILE, PROVIDER_ID_RE, directCapabilityOf, loadProviderProfile, validateProfile, providerUrlError,
   type AuthMode, type ProviderProfileFile,
 } from "./providers.ts";
+import { loadProductConfig } from "./productConfig.ts";
+import type { LocalAgentId } from "./local_agent_runtime.ts";
 
 /** 界面传下来的那一份。字段名与开源版一致，便于上游页面直接复用。 */
 export interface LlmOverride {
@@ -24,6 +27,22 @@ export interface LlmOverride {
   baseURL?: string;
   apiKey?: string;
   model?: string;
+}
+
+export type ExecutionMode = "agent" | "direct";
+
+export interface ResolvedDirectProvider {
+  name: string;
+  baseURL: string;
+  apiKey: string;
+  model: string;
+  structuredOutput: "server_schema" | "prompt";
+}
+
+export function assertExecutionMode(value: unknown): ExecutionMode {
+  if (value === undefined) return "agent";
+  if (value === "agent" || value === "direct") return value;
+  throw new RuntimeProviderError("bad_execution_mode", "executionMode 只能是 agent 或 direct");
 }
 
 export type ResolvedRuntimeProvider =
@@ -37,7 +56,7 @@ export type ResolvedRuntimeProvider =
     }
   | {
       runtime: "local-agent";
-      agent: "claude";
+      agent: LocalAgentId;
       model: null;
       env: NodeJS.ProcessEnv;
     };
@@ -55,15 +74,18 @@ export class RuntimeProviderError extends Error {
 export const isCliProvider = (p: string): boolean => p.startsWith("cli-");
 
 /**
- * 订阅档必须明确映射到真实 runtime。当前是产品自带 Codex + 本机 Claude Code；
+ * 订阅档必须明确映射到真实 runtime。当前是产品自带 Codex + 本机 Claude Code / CodeBuddy；
  * 其余 CLI 没有安全适配器就拒绝。
  *
- * 🔴 界面只列已经有真实适配器的 Codex / Claude；旧 localStorage 或手工请求仍可能
+ * 🔴 界面只列已经有真实适配器的 Codex / Claude / CodeBuddy；旧 localStorage 或手工请求仍可能
  *    带来 Qwen / DeepSeek 等 `cli-*`。如果这里对所有 CLI 一律回落到自带引擎，
  *    用户选了 Claude、答案却出自 Codex —— 而且**界面上一个字都不会提示**。
  *    这正是本文件开头那条纪律说的"账单和产出来自别处"。⇒ 认不出的一律报错。
  */
-const LOCAL_AGENT_BY_PROVIDER = Object.freeze({ "cli-claude": "claude" } as const);
+const LOCAL_AGENT_BY_PROVIDER = Object.freeze({
+  "cli-claude": "claude",
+  "cli-codebuddy": "codebuddy",
+} as const satisfies Record<string, LocalAgentId>);
 
 /** 自定义端点用的固定 env 变量名 —— 只存在于内存里的这一份 env */
 const RUNTIME_KEY_VAR = "VRA_RUNTIME_API_KEY";
@@ -96,7 +118,7 @@ export function resolveRuntimeProvider(
       return { runtime: "local-agent", agent: LOCAL_AGENT_BY_PROVIDER[id as keyof typeof LOCAL_AGENT_BY_PROVIDER], model: null, env: baseEnv };
     }
     {
-      throw new RuntimeProviderError("unsupported_cli", `订阅档当前只支持 Codex 与 Claude Code，接不上 ${id}`);
+      throw new RuntimeProviderError("unsupported_cli", `订阅档当前只支持 Codex、Claude Code 与 WorkBuddy / CodeBuddy，接不上 ${id}`);
     }
   }
 
@@ -107,7 +129,7 @@ export function resolveRuntimeProvider(
   if (id === "openai-compatible" || id === "custom") {
     if (!base) throw new RuntimeProviderError("missing_base_url", "自定义端点必须填 baseURL");
     if (!key) throw new RuntimeProviderError("missing_key", "自定义端点必须填 API key");
-    // ⚠️ 与 ③ 用同一把尺子：只放 http(s)。两条分支各判各的，迟早漂移
+    // 与模板共用 URL 校验：远程必须 HTTPS，HTTP 只开放明确的本机地址。
     const checked = assertHttp(base);
     // ⚠️ 手搓的档案最容易与契约漂移 —— 走一遍与磁盘模板同一把尺子
     const synthesized = validateProfile(
@@ -140,7 +162,7 @@ export function resolveRuntimeProvider(
     throw new RuntimeProviderError("unknown_provider", `没有这个 provider 的模板:${id}（可选见 providers/ 目录）`);
   }
   if (!key) throw new RuntimeProviderError("missing_key", `${id} 需要 API key`);
-  // ⚠️ baseURL 允许覆盖（私有网关 / 填占位符），但**必须是 http(s)** —— 别让它变成一条本地文件路径。
+  // baseURL 允许覆盖（私有网关 / 填占位符），远程 HTTPS / 本机 HTTP 的校验与模板一致。
   //    覆盖值交给 loadProviderProfile 在**校验之前**替换：带占位符的模板只有这样才用得起来。
   let profile: ProviderProfileFile;
   try {
@@ -170,12 +192,80 @@ export function resolveRuntimeProvider(
 }
 
 /**
- * baseURL 只放 http(s)，且**不许带 URL userinfo**（`https://user:pass@host` 那种）。
- *
- * ⚠️ 说清楚挡住的**只有 userinfo** —— `?api_key=…` 这类把凭据放进 query 的写法拦不住，
- *    也不打算拦：常见网关的合法参数长得一模一样，靠猜参数名去拦只会误伤
- *    （Codex 复审 r3 指出注释原来把这条说大了 —— 注释不能替代码许愿）。
- *    真正兜底的是下一条：**报错绝不回显原串**。
+ * 解析这次请求实际会使用的 AI 来源。未传请求级配置时不能写成一个固定的
+ * `backend-default` 占位符：后台默认 provider / model / endpoint / key 变化后，
+ * 两段式任务必须看见来源已经变了并要求重新路由。
+ */
+export function resolveSelectedRuntime(
+  repoRoot: string, dataRoot: string, llm?: LlmOverride, baseEnv: NodeJS.ProcessEnv = process.env,
+): ResolvedRuntimeProvider {
+  if (llm) return resolveRuntimeProvider(repoRoot, dataRoot, llm, baseEnv);
+  let pc: ReturnType<typeof loadProductConfig>;
+  try {
+    pc = loadProductConfig(repoRoot, { dataRootOverride: dataRoot, requireAuth: false, env: baseEnv });
+  } catch (error) {
+    throw new RuntimeProviderError("bad_provider", error instanceof Error ? error.message : String(error));
+  }
+  if (!pc.providerProfile) throw new RuntimeProviderError("bad_provider", "后台默认 AI 来源没有可用的 provider 档案");
+  return {
+    runtime: "codex",
+    profile: pc.providerProfile,
+    auth: pc.provider.auth,
+    model: pc.defaults.model ?? pc.providerProfile.default_model,
+    env: baseEnv,
+  };
+}
+
+/** 两段式任务和多轮辩论用的真实 AI 来源绑定；只暴露摘要，不保留 key。 */
+export function runtimeSourceFingerprint(
+  repoRoot: string, dataRoot: string, llm?: LlmOverride, baseEnv: NodeJS.ProcessEnv = process.env,
+): string {
+  const selected = resolveSelectedRuntime(repoRoot, dataRoot, llm, baseEnv);
+  const source = selected.runtime === "local-agent"
+    ? { runtime: selected.runtime, agent: selected.agent, auth: "subscription", baseURL: "", model: "", apiKey: "" }
+    : {
+        runtime: selected.runtime,
+        provider: selected.profile.id,
+        auth: selected.auth,
+        baseURL: selected.profile.base_url ?? "",
+        model: selected.model ?? "",
+        apiKey: selected.auth === "api_key" ? selected.env[selected.profile.env_key] ?? "" : "",
+      };
+  return createHash("sha256").update(JSON.stringify(source)).digest("hex");
+}
+
+/**
+ * 将同一份 AI 来源配置收窄成真正的单次直连能力。
+ * 订阅登录和没有通过 direct 矩阵的模板一律拒绝，不猜协议。
+ */
+export function resolveDirectProvider(
+  repoRoot: string, dataRoot: string, llm: LlmOverride, baseEnv: NodeJS.ProcessEnv = process.env,
+): ResolvedDirectProvider {
+  const resolved = resolveRuntimeProvider(repoRoot, dataRoot, llm, baseEnv);
+  if (resolved.runtime !== "codex" || resolved.auth !== "api_key") {
+    throw new RuntimeProviderError("direct_provider_unsupported", "订阅登录只能使用 Agent；直连模式需要已验证的 API");
+  }
+  const capability = directCapabilityOf(resolved.profile);
+  if (!capability.supported || !capability.baseURL) {
+    throw new RuntimeProviderError("direct_provider_unsupported", `当前 API 尚未通过直连验证：${capability.reason}`);
+  }
+  const apiKey = resolved.env[resolved.profile.env_key];
+  const model = resolved.model ?? capability.model;
+  if (!apiKey || !model) {
+    throw new RuntimeProviderError("direct_provider_unsupported", "直连模式缺少 API key 或模型名");
+  }
+  return Object.freeze({
+    name: resolved.profile.id,
+    baseURL: capability.baseURL,
+    apiKey,
+    model,
+    structuredOutput: capability.structuredOutput,
+  });
+}
+
+/**
+ * baseURL 只放 http(s)，且不许带 URL userinfo / query / fragment。
+ * API key 只能走单独的 key 字段；否则运行配置的记账链很容易把凭据当成端点地址留下。
  *
  * 🔴 报错**绝不回显原串**：不管凭据藏在 userinfo、query 还是路径里，只要不把 URL 拼进
  *    错误消息，它就不会一路回到前端、也不会被上层记下来 —— "密钥不落盘"这条承诺
@@ -187,18 +277,8 @@ export function resolveRuntimeProvider(
  *    会打死真实用户，换不来对应的安全收益。
  */
 function assertHttp(u: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(u);
-  } catch {
-    throw new RuntimeProviderError("bad_base_url", "baseURL 不是合法 URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RuntimeProviderError("bad_base_url", `baseURL 只能是 http(s)，收到 ${parsed.protocol}`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new RuntimeProviderError("bad_base_url", "baseURL 里不要带用户名密码（user:pass@），把 key 填到下面的 API Key 里");
-  }
+  const error = providerUrlError(u);
+  if (error) throw new RuntimeProviderError("bad_base_url", error);
   return u;
 }
 

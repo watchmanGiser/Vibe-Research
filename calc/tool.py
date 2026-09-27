@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import sys
 
 from calc import formulas
@@ -43,7 +44,7 @@ ALLOWED = {
 
 def _fail(msg: str, **extra: object) -> None:
     print(json.dumps({"ok": False, "error": msg, **extra}, ensure_ascii=False))
-    sys.exit(2)
+    # A valid JSON failure is a tool business result, not a process crash.
 
 
 def main() -> None:
@@ -57,8 +58,25 @@ def main() -> None:
         _fail(f"入参不是合法 JSON:{exc}")
         return
 
+    if not isinstance(req, dict):
+        _fail("入参必须是对象")
+        return
+
     if req.get("catalog"):
-        print(json.dumps({"ok": True, "catalog": sorted(ALLOWED)}, ensure_ascii=False))
+        functions = {}
+        for name in sorted(ALLOWED):
+            fn = getattr(formulas, name)
+            functions[name] = {
+                "description": inspect.getdoc(fn) or "",
+                "parameters": [
+                    {"name": p.name, "required": p.default is inspect.Parameter.empty,
+                     **({"default": p.default} if p.default is not inspect.Parameter.empty else {})}
+                    for p in inspect.signature(fn).parameters.values()
+                ],
+            }
+        print(json.dumps({"ok": True, "catalog": sorted(ALLOWED), "functions": functions,
+                          "request_shape": {"fn": "<catalog name>", "args": {"<parameter name>": "<value>"}}},
+                         ensure_ascii=False, allow_nan=False))
         return
 
     fn = str(req.get("fn") or "")
@@ -80,7 +98,7 @@ def main() -> None:
         return
 
     # 附上确定性的 display（界面照抄它，不自己格式化 —— 否则四舍五入口径又会分叉）
-    attach_display(result)
+    result = attach_display(result)
     print(json.dumps({"ok": True, "fn": fn, "result": result}, ensure_ascii=False, allow_nan=False))
 
 

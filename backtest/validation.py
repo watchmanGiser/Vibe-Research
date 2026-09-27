@@ -84,8 +84,8 @@ def monte_carlo_test(
     result = {
         "actual_sharpe": round(actual["sharpe"], 4),
         "actual_max_dd": round(actual["max_dd"], 4),
-        "p_value_sharpe": round(sharpe_count / n_simulations, 4),
-        "p_value_max_dd": round(dd_count / n_simulations, 4),
+        "p_value_sharpe": (sharpe_count + 1) / (n_simulations + 1),
+        "p_value_max_dd": (dd_count + 1) / (n_simulations + 1),
         "simulated_sharpe_mean": round(float(sim_arr.mean()), 4),
         "simulated_sharpe_std": round(float(sim_arr.std()), 4),
         "simulated_sharpe_p5": round(float(np.percentile(sim_arr, 5)), 4),
@@ -368,10 +368,17 @@ def _load_trades(run_dir: Path) -> List[TradeRecord]:
     if df.empty:
         return []
 
-    # trades.csv has entry+exit row pairs; extract exit rows (they have pnl != 0)
+    # The engine writes adjacent entry/exit pairs, including zero-PnL exits.
+    # A malformed/foreign layout must not silently lose trades.
+    if len(df) % 2:
+        raise ValueError("trades.csv must contain adjacent entry/exit pairs")
     trades = []
-    exit_rows = df[df["pnl"] != 0].reset_index(drop=True)
-    for _, row in exit_rows.iterrows():
+    for index in range(0, len(df), 2):
+        entry, row = df.iloc[index], df.iloc[index + 1]
+        if (entry["code"] != row["code"] or
+                (entry["side"], row["side"]) not in (("buy", "sell"), ("sell", "buy")) or
+                entry["qty"] != row["qty"] or float(entry["pnl"]) != 0):
+            raise ValueError("trades.csv contains an invalid entry/exit pair")
         hold = pd.to_numeric(row.get("holding_bars"), errors="coerce")
         if pd.isna(hold):
             hold = pd.to_numeric(row.get("holding_days", 0), errors="coerce")
@@ -380,10 +387,10 @@ def _load_trades(run_dir: Path) -> List[TradeRecord]:
             TradeRecord(
                 symbol=str(row.get("code", "")),
                 direction=1 if row.get("side") == "sell" else -1,
-                entry_price=0.0,
+                entry_price=float(entry["price"]),
                 exit_price=float(row.get("price", 0)),
-                entry_time=pd.Timestamp(row.get("timestamp", "2000-01-01")),
-                exit_time=pd.Timestamp(row.get("timestamp", "2000-01-01")),
+                entry_time=pd.Timestamp(entry["timestamp"]),
+                exit_time=pd.Timestamp(row["timestamp"]),
                 size=float(row.get("qty", 0)),
                 leverage=1.0,
                 pnl=float(row.get("pnl", 0)),

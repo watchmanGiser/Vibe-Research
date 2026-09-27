@@ -19,6 +19,18 @@ REG = os.path.join(HERE, "registry.json")
 FETCH = os.path.join(REPO, ".agents", "skills", "data-access", "scripts", "fetch_endpoint.py")
 SAMPLE = {"cn6": "300308", "us": "AAPL", "hk": "00700", "global": "AAPL"}
 
+FETCH_ENV_KEYS = {
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+    "TEMP", "TMP", "APPDATA", "LOCALAPPDATA", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+}
+
+
+def endpoint_env(ep: dict) -> dict:
+    keys = FETCH_ENV_KEYS | ({ep["auth_env"]} if isinstance(ep.get("auth_env"), str) else set())
+    return {key: value for key, value in os.environ.items() if key in keys}
+
 
 def run_one(ep: dict, out_dir: str, timeout: int, python: str) -> dict:
     kind = ep.get("symbol_kind", "cn6")
@@ -31,17 +43,35 @@ def run_one(ep: dict, out_dir: str, timeout: int, python: str) -> dict:
             cmd += ["--symbol", sym]
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout, env=endpoint_env(ep))
         dur = round(time.time() - t0, 1)
         try:
             d = json.loads(p.stdout)
         except json.JSONDecodeError:
             return {"id": ep["id"], "status": "crash", "exit": p.returncode, "seconds": dur, "error": (p.stderr or p.stdout)[-300:]}
+        # A broken endpoint must be reported, not crash the diagnostic itself.
+        valid = isinstance(d, dict) and d.get("status") in ("ok", "partial", "failed")
+        if valid:
+            valid = all(d.get(k) is None or isinstance(d[k], list) for k in ("evidence", "missing", "errors"))
+            valid = valid and (d.get("extra") is None or isinstance(d["extra"], dict))
+        if valid:
+            extra = d.get("extra") or {}
+            valid = (extra.get("raw_files") is None or isinstance(extra["raw_files"], list)) and (
+                extra.get("degraded") is None or isinstance(extra["degraded"], str))
+            valid = valid and all(isinstance(e, dict) and isinstance(e.get("error", ""), str) for e in (d.get("errors") or []))
+        if not valid:
+            return {"id": ep["id"], "status": "crash", "exit": p.returncode, "seconds": dur,
+                    "error": "端点响应结构无效（status 或证据/错误/extra 字段不符合信封契约）",
+                    "symbol": sym or "-", "layer": ep.get("layer"), "source": ep.get("source")}
         return {"id": ep["id"], "status": d.get("status"), "exit": p.returncode, "seconds": dur, "evidence": len(d.get("evidence") or []), "missing": len(d.get("missing") or []),
                 "raw_files": len((d.get("extra") or {}).get("raw_files") or []), "error": (d.get("errors") or [{}])[0].get("error", "")[:200] if d.get("errors") else "", "degraded": (d.get("extra") or {}).get("degraded", ""),
                 "symbol": sym or "-", "layer": ep.get("layer"), "source": ep.get("source"), "compliance": ep.get("compliance")}
     except subprocess.TimeoutExpired:
         return {"id": ep["id"], "status": "timeout", "exit": None, "seconds": timeout, "error": f"超过 {timeout}s", "symbol": sym or "-", "layer": ep.get("layer"), "source": ep.get("source")}
+    except (OSError, UnicodeError) as error:
+        return {"id": ep["id"], "status": "crash", "exit": None, "seconds": round(time.time() - t0, 1),
+                "error": f"无法运行或读取端点输出：{type(error).__name__}", "symbol": sym or "-",
+                "layer": ep.get("layer"), "source": ep.get("source")}
 
 
 def main() -> None:

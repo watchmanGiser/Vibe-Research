@@ -34,7 +34,7 @@ test("providers:产品模板全部通过 schema;openai 为 responses 原生;国�
       assert.equal(profile.wire_api, "responses", `${id} 不能再用 chat 协议(引擎已移除)`);
       assert.equal(profile.requires_openai_auth, false);
       assert.deepEqual(profile.auth_modes, ["api_key"]);
-      assert.ok(profile.base_url!.startsWith("https://"));
+      assert.ok(profile.base_url!.startsWith(id === "selfhosted" ? "http://localhost:" : "https://"));
     }
   }
   assert.throws(() => loadProviderProfile(REPO, path.join(REPO, ".local"), "nope"), /未知 provider/);
@@ -59,6 +59,25 @@ test("providers:带占位符的模板不能直接用 —— 选用时当场拒,�
   }
 });
 
+test("#34 selfhosted 覆盖流程保留未验证与远程 HTTPS 边界", () => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vra-selfhosted-"));
+  try {
+    assert.throws(() => loadProviderProfile(REPO, dataRoot, "selfhosted"), /占位符/);
+    const tpl = JSON.parse(fs.readFileSync(path.join(REPO, "providers/selfhosted.json"), "utf8"));
+    assert.equal(tpl.matrix.status, "unverified");
+    assert.equal(tpl.default_model, null);
+    fs.mkdirSync(path.join(dataRoot, "providers"));
+    fs.writeFileSync(path.join(dataRoot, "providers/selfhosted.json"), JSON.stringify({ ...tpl,
+      base_url: "http://127.0.0.1:11434/v1", default_model: "test-model" }));
+    const profile = loadProviderProfile(REPO, dataRoot, "selfhosted").profile;
+    assert.equal(profile.base_url, "http://127.0.0.1:11434/v1");
+    assert.equal(profile.default_model, "test-model");
+    assert.throws(() => validateProfile({ ...profile, base_url: "http://192.168.1.10:8000/v1" }, "t"), /HTTPS/);
+    assert.throws(() => validateProfile({ ...profile, base_url: "ftp://example.com/v1" }, "t"), /schema/);
+    assert.doesNotThrow(() => validateProfile({ ...profile, base_url: "https://model.example.com/v1" }, "t"));
+  } finally { fs.rmSync(dataRoot, { recursive: true, force: true }); }
+});
+
 test("providers:validateProfile 拒绝密钥值 / 非 openai requires_openai_auth / openai 自定义 base_url / 非法 env_key", () => {
   const base = { id: "x", name: "X", wire_api: "responses", base_url: "https://x.example/v1", env_key: "X_API_KEY", auth_modes: ["api_key"], requires_openai_auth: false, default_model: "m", responses_support: "native" };
   // 引擎已移除 chat:契约层必须当场拒,并说清两条出路(换 Responses 端点 / 架网关)
@@ -69,7 +88,7 @@ test("providers:validateProfile 拒绝密钥值 / 非 openai requires_openai_aut
   assert.throws(() => validateProfile({ ...base, requires_openai_auth: true }, "t"), /requires_openai_auth/);
   assert.throws(() => validateProfile({ ...base, id: "openai", wire_api: "responses" }, "t"), /base_url 必须为 null/);
   assert.throws(() => validateProfile({ ...base, env_key: "PATH" }, "t"), /schema/);
-  assert.throws(() => validateProfile({ ...base, base_url: "http://insecure" }, "t"), /schema/);
+  assert.throws(() => validateProfile({ ...base, base_url: "http://insecure" }, "t"), /HTTPS/);
   assert.throws(() => validateProfile({ ...base, extra: 1 }, "t"), /schema/);
 });
 

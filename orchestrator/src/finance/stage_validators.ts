@@ -9,14 +9,16 @@
 import type { StageValidationContext } from "../plugin.ts";
 import type { RunView } from "../validator.ts";
 import { financeQuoteDecision } from "./quote_freshness.ts";
+import { peDisclosureErrors, peDisclosureLines } from "./pe_disclosure.ts";
 
 type SourceConflictEntry = { field?: string; period?: string; kind?: string; values?: { ref_id?: string }[] };
 
 /** profile:agent 写的报价判定必须与从证据推导出来的一致(不许自己编一个更好看的) */
 function validateProfile(ctx: StageValidationContext): string[] {
   const d = financeQuoteDecision(ctx.run as unknown as RunView);
-  if (d.decision !== "missing" && ctx.output.quote_decision !== d.decision) {
-    return [`quote_decision 应为 ${d.decision}(${d.reason}),agent 写的是 ${String(ctx.output.quote_decision)}`];
+  const expected = d.decision === "missing" ? "unknown_unverified" : d.decision;
+  if (ctx.output.quote_decision !== expected) {
+    return [`quote_decision 应为 ${expected}(${d.reason}),agent 写的是 ${String(ctx.output.quote_decision)}`];
   }
   return [];
 }
@@ -26,7 +28,7 @@ function validateRisk(ctx: StageValidationContext): string[] {
   const errors: string[] = [];
   const listed = (ctx.output.source_conflicts as SourceConflictEntry[] | undefined) ?? [];
   for (const c of ctx.run.conflicts) {
-    const entry = listed.find((x) => x.field === c.field && (x.period === c.period || !x.period));
+    const entry = listed.find((x) => x.field === c.field && x.period === c.period);
     if (!entry) { errors.push(`risk.source_conflicts 未覆盖权威冲突 ${c.field}@${c.period}(见 conflicts.json)`); continue; }
     if (entry.kind !== "source") errors.push(`risk.source_conflicts ${c.field}@${c.period} 是权威冲突,kind 必须为 "source"(实际 ${String(entry.kind)})`);
     const refs = new Set((entry.values ?? []).map((v) => v.ref_id));
@@ -44,4 +46,8 @@ function validateRisk(ctx: StageValidationContext): string[] {
 export const FINANCE_STAGE_VALIDATORS: Record<string, (ctx: StageValidationContext) => string[]> = {
   profile: validateProfile,
   risk: validateRisk,
+  report: (ctx) => {
+    const run = ctx.run as RunView;
+    return peDisclosureErrors(run.report ?? "", peDisclosureLines(run.evidence.values(), run.calcById.values()));
+  },
 };

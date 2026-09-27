@@ -39,6 +39,7 @@ export interface AiConsoleProps {
   configured: boolean;
   copy: AiConsoleCopy;
   renderReplyActions?: (reply: string, question: string) => ReactNode;
+  renderReply?: (reply: string) => ReactNode;
   renderSetup?: () => ReactNode;
 }
 
@@ -51,7 +52,7 @@ const readH = (): number => {
   }
 };
 
-export function AiConsole({ open, onClose, send, configured, copy, renderReplyActions, renderSetup }: AiConsoleProps) {
+export function AiConsole({ open, onClose, send, configured, copy, renderReplyActions, renderReply, renderSetup }: AiConsoleProps) {
   const page = useCurrentAiPage();
   /**
    * 聊天记录：左边一栏是**历次对话**，右边是当前这条。
@@ -146,7 +147,7 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
   return (
     <section
       style={{ height }}
-      className="glass relative z-30 flex shrink-0 flex-col overflow-hidden rounded-t-2xl border-t border-primary/30"
+      className="ai-surface relative z-30 flex shrink-0 flex-col overflow-hidden rounded-t-2xl border-t border-primary/30"
     >
       {/* 拖拽把手 */}
       <div
@@ -156,7 +157,7 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
         title="拖动改变高度"
         className="absolute inset-x-0 top-0 h-1.5 cursor-ns-resize hover:bg-primary/30"
       />
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2.5">
+      <div className="ai-surface-header flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2.5">
         <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-glow">
           <Sparkles className="h-4 w-4 shrink-0 text-primary" />
           <span className="truncate">{copy.title}</span>
@@ -240,6 +241,8 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
               msgs={inSync ? chat.msgs : []}
               loading={chat.loading || !inSync}
               err={chat.err}
+              info={chat.info}
+              renderReply={renderReply}
               notice={copy.notice}
               suggestions={copy.suggestions}
               onPick={(x) => inSync && void chat.submit(x, decorate)}
@@ -248,6 +251,7 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
             <AiComposer
               placeholder={copy.placeholder}
               disabled={chat.loading || !inSync}
+              onStop={chat.loading && inSync ? chat.abort : undefined}
               onSend={(t) => inSync && void chat.submit(t, decorate)}
             />
           </div>

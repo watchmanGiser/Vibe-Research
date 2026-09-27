@@ -66,7 +66,7 @@ def main() -> None:
                                             period=d, source="baostock", endpoint=EP, raw_ref=raw["raw_ref"],
                                             adjustment=adj, note="extracted:SDK 行数据拼装"))
         res["evidence"].append(evidence(script=SCRIPT, symbol=digits, market=market, field="pe_ttm_traded_history_points",
-                                        value=len(traded), unit="个交易日", period=f"{rows[0][idx['date']]}..{d}",
+                                        value=len(traded), unit="个交易日", period=f"{traded[0][idx['date']]}..{d}",
                                         source="baostock", endpoint=EP, raw_ref=raw["raw_ref"], currency="n/a",
                                         note="已剔除 tradestatus!=1 的停牌日;序列在 raw_ref CSV(列 peTTM/pbMRQ/psTTM/turn/tradestatus/isST),"
                                              "calc 用 history_csv where tradestatus=1 加载"))

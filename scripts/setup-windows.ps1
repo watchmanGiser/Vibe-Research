@@ -9,6 +9,8 @@ function Assert-NativeSuccess([string]$Step) {
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "未找到 Node.js。请先安装 Node.js 22 或更高版本。" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "未找到 npm。请重新安装 Node.js。" }
+& node (Join-Path $root "scripts\check-node.mjs")
+Assert-NativeSuccess "Node 运行时预检"
 
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
@@ -28,9 +30,9 @@ if ($LASTEXITCODE -ne 0) { throw "Vibe Research 需要 Python 3.11 或更高版�
 Assert-NativeSuccess "升级 pip"
 & $venvPython -m pip install -r ".agents\skills\data-access\scripts\requirements.txt"
 Assert-NativeSuccess "安装 Python 依赖"
-& npm ci --prefix orchestrator
+& npm ci --prefix orchestrator --no-audit --no-fund
 Assert-NativeSuccess "安装 orchestrator 依赖"
-& npm ci --prefix desktop
+& npm ci --prefix desktop --no-audit --no-fund
 Assert-NativeSuccess "安装 desktop 依赖"
 & node (Join-Path $root "orchestrator\src\init.ts") --python $venvPython
 Assert-NativeSuccess "初始化产品目录"

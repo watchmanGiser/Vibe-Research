@@ -282,11 +282,11 @@ test("多行字符串里的转义引号不算闭合(Codex ir-r4)", () => {
   assert.equal(findForeignProjectRootMarkers(after), true, "闭合之后的才是真的");
 });
 
-test("根路径不许含空白:带空格的数据根会让执行层拒掉所有引用运行目录的命令(实测),提前拒绝并说清楚", () => {
+test("显式 Shell 模式仍拒绝空白根路径，文件系统根目录在所有模式都拒绝", () => {
   const app = product();
   const spaced = path.join(tmp("vra-ir-sp-"), "Application Support", "VibeResearch");
   fs.mkdirSync(spaced, { recursive: true });
-  assert.throws(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: spaced, python: "false" }), /不能含空格/);
+  assert.throws(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: spaced, python: "false", executionMode: "shell_hooks" }), /不能含空格/);
   // 根目录本身也不行:dataRoot="/" 时钩子边界会拼成 "//",每次调用都判不一致并放行(全审 r1-P3-7)
   assert.throws(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: "/", python: "false" }), /不能是文件系统根目录/);
   // 无空格照常

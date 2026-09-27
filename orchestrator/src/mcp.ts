@@ -59,11 +59,11 @@ export function buildServer(ctx: ServiceContext): McpServer {
       return fetchEndpoint(ctx, { ...rest, consistency: { mode: consistency ?? "fresh" } });
     }));
   server.registerTool("start_research", { title: "启动研究运行", description: "后台拉起六阶段研究(编排器执行取数 → agent 解释 → validator → gate),立即返回 run_id;用 research_status 轮询。", 
-    inputSchema: { symbol: z.string(), market: z.string().optional(), stages: z.array(z.string()).optional(), endpoints: z.enum(["full", "core"]).optional(), knowledge: z.enum(["on", "off"]).optional(), run_id: z.string().optional(), overwrite: z.boolean().optional(), no_agent: z.boolean().optional() } },
+    inputSchema: { symbol: z.string(), market: z.string().optional(), stages: z.array(z.string()).optional(), endpoints: z.enum(["full", "core"]).optional(), knowledge: z.enum(["on", "off"]).optional(), run_id: z.string().optional(), overwrite: z.boolean().optional(), no_agent: z.boolean().optional(), engine: z.literal("codex").optional() } },
     (a) => wrap(() => startResearch(ctx, a)));
   server.registerTool("research_status", { title: "研究运行状态", description: "读 manifest 与最近事件:状态 / 各阶段 / 证据数 / 是否有报告与查看器。", inputSchema: { run_id: z.string(), last_events: z.number().int().min(1).max(50).optional() } },
     (a) => wrap(() => researchStatus(ctx, a.run_id, a.last_events)));
-  server.registerTool("get_report", { title: "读报告", description: "返回 report.md 与 report_appendix.md 全文。", inputSchema: { run_id: z.string() } }, (a) => wrap(() => getReport(ctx, a.run_id)));
+  server.registerTool("get_report", { title: "读报告", description: "availability=ready 才返回已结束且通过最终校验的报告与附录；unvalidated 表示本地草稿未获放行，missing 表示无报告。run_status=incomplete 时须保留资料缺口说明。", inputSchema: { run_id: z.string() } }, (a) => wrap(() => getReport(ctx, a.run_id)));
   server.registerTool("get_evidence", { title: "查证据", description: "按字段 / 来源 / 关键词筛选某次运行的证据(evidence.json;运行中则合并 fetch/*.json)。", inputSchema: { run_id: z.string(), field: z.string().optional(), source: z.string().optional(), q: z.string().optional(), limit: z.number().int().min(1).max(2000).optional() } },
     (a) => wrap(() => getEvidence(ctx, a.run_id, a)));
   server.registerTool("list_runs", { title: "列出运行", description: "列出 .local/runs 下的研究运行(run_id / 状态 / 主体 / 起止)。", inputSchema: { limit: z.number().int().min(1).max(500).optional() } }, (a) => wrap(() => listRuns(ctx, a.limit)));

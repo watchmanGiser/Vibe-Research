@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,19 +9,25 @@ import { fileURLToPath } from "node:url";
 import "../src/finance/register.ts"; // 测试文件也是入口:插件要先注册
 import { IngestError, MAX_FILES, ingestFiles } from "../src/ingest.ts";
 import { listRecords, upsertRecord } from "../src/ledger.ts";
+import { readIngestFile, type IngestReadContext } from "../src/ingest_tools.ts";
 
 // ⚠️ fileURLToPath 而不是 new URL(...).pathname —— 仓库路径含中文时 pathname 是百分号编码的
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface Cap {
+  config?: Record<string, unknown>;
+  names?: string[];
+  image?: { data: string; mimeType: string };
   opts?: Record<string, unknown>;
   inputs?: unknown;
   schema?: unknown;
 }
 
 /** 假 Codex:记录 startThread 选项与本轮输入,回放预设 JSON */
-function fakeCodex(reply: string, cap?: Cap) {
-  return () =>
+function fakeCodex(reply: string, cap?: Cap, read = true) {
+  return (config: unknown) => {
+    if (cap) cap.config = config as Record<string, unknown>;
+    return (
     ({
       startThread(opts: Record<string, unknown>) {
         if (cap) cap.opts = opts;
@@ -33,13 +40,35 @@ function fakeCodex(reply: string, cap?: Cap) {
             }
             return Promise.resolve({
               events: (async function* () {
+                if (read) {
+                  const dir = String(opts.workingDirectory);
+                  const names = fs.readdirSync(dir).filter(name => !name.startsWith("."));
+                  if (cap) cap.names = names;
+                  const ctx: IngestReadContext = { dir, files: names.map(name => ({ name,
+                    kind: name.endsWith(".png") ? "image" : "text",
+                    ...(name.endsWith(".png") ? { mimeType: "image/png" } : {}),
+                    sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(dir, name))).digest("hex"),
+                  })) };
+                  for (const file of ctx.files) {
+                    let offset = 0;
+                    for (;;) {
+                      const result = readIngestFile(ctx, { name: file.name, offset });
+                      const chunk = JSON.parse(result.content[0]!.text!);
+                      const image = result.content.find(block => block.type === "image");
+                      if (cap && image) cap.image = { data: image.data, mimeType: image.mimeType };
+                      if (!chunk.has_more) break;
+                      offset = chunk.end;
+                    }
+                  }
+                }
                 yield { type: "item.completed", item: { type: "agent_message", text: reply } };
               })(),
             });
           },
         };
       },
-    }) as never;
+    }) as never);
+  };
 }
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "vra-ingest-"));
@@ -50,6 +79,119 @@ const OK_REPLY = JSON.stringify({
     { source_file: "01_a.csv", fields: { symbol: "300308", shares: 100, cost: 846 }, uncertain: ["cost:截图模糊"] },
   ],
   warnings: ["第二张图看不清"],
+});
+
+for (const agent of ["claude", "codebuddy"] as const) {
+  test(`${agent} 转写只经上传白名单 MCP，保持出处且不自动写台账`, async (t) => {
+    const root = tmp();
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const out = await ingestFiles({ repoRoot: REPO, dataRoot: root, llm: { provider: `cli-${agent}` },
+      localAgentRunner: async (actual, opts) => {
+        assert.equal(actual, agent);
+        if (agent === "codebuddy") {
+          assert.equal(opts.outputSchema, undefined, "WorkBuddy 工具轮不同时启用 CLI schema 模式");
+          assert.match(opts.userPrompt, /JSON Schema/);
+          assert.match(opts.userPrompt, /source_file/);
+        } else assert.ok(opts.outputSchema);
+        assert.deepEqual(opts.controlledMcp?.allowedTools, ["mcp__vra_ingest__read_ingest_file"]);
+        const env = opts.controlledMcp!.env;
+        const ctx: IngestReadContext = { dir: env.VRA_INGEST_DIR!, files: JSON.parse(env.VRA_INGEST_FILES!) };
+        const result = readIngestFile(ctx, { name: "01_a.csv" });
+        assert.match((result.content[0] as { text: string }).text, /300308/);
+        return OK_REPLY;
+      },
+    }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("代码,数量\n300308,100") }] },
+    () => { throw new Error("不得暗中切换 Codex"); });
+    assert.equal(out.drafts[0]!.source_file, "a.csv");
+    assert.deepEqual(listRecords(root, "position"), []);
+  });
+}
+
+test("本机 Agent 未读取全部资料时不能返回看似完整的草稿，失败清理原件", async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(() => ingestFiles({ repoRoot: REPO, dataRoot: root, llm: { provider: "cli-claude" },
+    localAgentRunner: async () => OK_REPLY,
+  }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }), /完整读取/);
+  assert.deepEqual(fs.readdirSync(path.join(root, "import")), []);
+});
+
+test("WorkBuddy 图片走原生附件，混合文本仍须读完白名单工具", async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const mixed of [false, true]) {
+    const out = await ingestFiles({ repoRoot: REPO, dataRoot: root, llm: { provider: "cli-codebuddy" },
+      localAgentRunner: async (agent, opts) => {
+        assert.equal(agent, "codebuddy");
+        assert.equal(opts.userImages?.[0]?.data, PNG);
+        assert.equal(opts.userImages?.[0]?.name, "01_表格.png");
+        assert.match(opts.systemPrompt, /原生附件/);
+        if (mixed) {
+          const env = opts.controlledMcp!.env;
+          const ctx = { dir: env.VRA_INGEST_DIR!, files: JSON.parse(env.VRA_INGEST_FILES!) } as IngestReadContext;
+          assert.equal(ctx.files.length, 1);
+          assert.equal(ctx.files[0]?.kind, "text");
+          readIngestFile(ctx, { name: ctx.files[0]!.name });
+        } else assert.equal(opts.controlledMcp, undefined, "纯图片不启动 MCP 或开放工具");
+        return JSON.stringify({ drafts: [{ source_file: "01_表格.png", fields: { symbol: "600519", shares: 300, cost: 123.45 }, uncertain: [] }], warnings: [] });
+      },
+    }, { kind: "position", files: [{ name: "表格.png", content_base64: PNG }, ...(mixed ? [{ name: "notes.txt", content_base64: b64("说明") }] : [])] });
+    assert.equal(out.drafts[0]?.source_file, "表格.png");
+    assert.deepEqual(listRecords(root, "position"), []);
+  }
+});
+
+test("本机 Agent 首轮漏读资料时只补跑一次同源受控读取，再校验草稿", async (t) => {
+  const dataRoot = tmp();
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  let calls = 0;
+  const result = await ingestFiles({ repoRoot: REPO, dataRoot, llm: { provider: "cli-codebuddy" },
+    localAgentRunner: async (agent, opts) => {
+      assert.equal(agent, "codebuddy");
+      calls++;
+      if (calls === 2) {
+        assert.match(opts.userPrompt, /尚未完整读取/);
+        const ctx = { dir: opts.controlledMcp!.env.VRA_INGEST_DIR,
+          files: JSON.parse(opts.controlledMcp!.env.VRA_INGEST_FILES) } as IngestReadContext;
+        for (const file of ctx.files) readIngestFile(ctx, { name: file.name });
+      }
+      return JSON.stringify({ drafts: [], summary: "空测试表", warnings: [] });
+    },
+  }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("symbol,shares,cost") }] });
+  assert.equal(calls, 2);
+  assert.equal(result.drafts.length, 0);
+});
+
+test("两次新调用不能各读一半资料后拼成完整回执", async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let calls = 0;
+  await assert.rejects(() => ingestFiles({ repoRoot: REPO, dataRoot: root, llm: { provider: "cli-codebuddy" },
+    localAgentRunner: async (_agent, opts) => {
+      const env = opts.controlledMcp!.env;
+      const ctx = { dir: env.VRA_INGEST_DIR!, files: JSON.parse(env.VRA_INGEST_FILES!) } as IngestReadContext;
+      readIngestFile(ctx, { name: ctx.files[calls++]!.name });
+      return JSON.stringify({ drafts: [], warnings: [] });
+    },
+  }, { kind: "position", files: ["a.txt", "b.txt"].map(name => ({ name, content_base64: b64("text") })) }), /完整读取/);
+  assert.equal(calls, 2);
+});
+
+for (const damage of ["original", "receipt"]) test(`资料完整性损坏立即失败不重试：${damage}`, async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let calls = 0;
+  await assert.rejects(() => ingestFiles({ repoRoot: REPO, dataRoot: root, llm: { provider: "cli-codebuddy" },
+    localAgentRunner: async (_agent, opts) => {
+      calls++;
+      const env = opts.controlledMcp!.env;
+      const files = JSON.parse(env.VRA_INGEST_FILES!);
+      // Leave the first file unread; damage in the later file must win over retry.
+      fs.writeFileSync(path.join(env.VRA_INGEST_DIR!, damage === "original" ? files[1].name : ".read-receipts.json"), "corrupt");
+      return JSON.stringify({ drafts: [], warnings: [] });
+    },
+  }, { kind: "position", files: ["a.txt", "b.txt"].map(name => ({ name, content_base64: b64("text") })) }));
+  assert.equal(calls, 1);
 });
 
 test("转写线程与对话同样的硬约束:只读沙箱 / 不联网 / 不联网搜索", async () => {
@@ -65,6 +207,54 @@ test("转写线程与对话同样的硬约束:只读沙箱 / 不联网 / 不联�
   assert.equal(o.networkAccessEnabled, false);
   assert.equal(o.webSearchMode, "disabled");
   assert.equal(o.approvalPolicy, "never");
+  const config = cap.config!;
+  const features = (config.config as { features: Record<string, boolean> }).features;
+  for (const key of ["shell_tool", "unified_exec", "view_image", "multi_agent", "multi_agent_v2", "apps", "enable_mcp_apps", "plugins", "tool_suggest", "standalone_web_search", "code_mode"]) assert.equal(features[key], false, key);
+  const overrides = JSON.stringify(config.configOverrides);
+  assert.match(overrides, /read_ingest_file/);
+  assert.doesNotMatch(overrides, /list_run_files|run_calc|write_stage/);
+});
+
+test("Codex 不读上传文件不能伪造完成，且转写失败后清理暂存件", async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(ingestFiles({ repoRoot: REPO, dataRoot: root },
+    { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(OK_REPLY, undefined, false)), /完整读取/);
+  assert.deepEqual(fs.readdirSync(path.join(root, "import")), []);
+});
+
+for (const scenario of ["cancel", "error"] as const) test(`真实 SDK 转写 ${scenario} 先停止进程树再清理上传批次`, { skip: process.platform === "win32" }, async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "codex-fixture");
+  const state = path.join(root, "child.json");
+  const lateRead = path.join(root, "late-read");
+  const childSource = `process.on('SIGTERM',()=>{});setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(lateRead)},require('fs').readFileSync('01_a.csv')),1500);setInterval(()=>{},100);`;
+  fs.writeFileSync(bin, `#!${process.execPath}\nconst fs=require('fs');const a=process.argv.slice(2);
+if(a.includes('--version')){console.log('codex-cli 0.153.4');process.exit(0)}
+if(a.includes('mcp')){console.log('[]');process.exit(0)}
+process.on('SIGTERM',()=>{});
+const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(childSource)}],{stdio:'ignore'});
+fs.writeFileSync(${JSON.stringify(state)},JSON.stringify({pid:c.pid,dir:process.cwd()}));
+${scenario === "error" ? "console.log(JSON.stringify({type:'error',message:'fixture failure'}));" : ""}
+setInterval(()=>{},100);`, { mode: 0o700 });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ engine: { codex_path: bin, codex_home: path.join(root, "home") } }));
+  const ac = new AbortController();
+  const turn = ingestFiles({ repoRoot: REPO, dataRoot: root, signal: ac.signal },
+    { kind: "position", files: [{ name: "a.csv", content_base64: b64("public-fixture") }] });
+  const rejected = assert.rejects(turn, (e: unknown) => e instanceof IngestError && e.code === (scenario === "cancel" ? "cancelled" : "turn_failed"));
+  for (let i = 0; i < 500 && !fs.existsSync(state); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(fs.existsSync(state), "真实 SDK 子进程应已启动");
+  const info = JSON.parse(fs.readFileSync(state, "utf8"));
+  if (scenario === "cancel") ac.abort(new Error("cancel fixture"));
+  await rejected;
+  for (let i = 0; i < 100; i++) {
+    try { process.kill(info.pid, 0); } catch { break; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.throws(() => process.kill(info.pid, 0), /ESRCH/);
+  assert.equal(fs.existsSync(info.dir), false);
+  assert.equal(fs.existsSync(lateRead), false, "延迟文件读取不得发生");
 });
 
 test("🔴 只产草稿,绝不写台账 —— 转写认错一个数字,落库后没人分得清是机器填的", async () => {
@@ -82,7 +272,7 @@ test("🔴 只产草稿,绝不写台账 —— 转写认错一个数字,落库�
   }
 });
 
-test("图片走 local_image 传给模型,文本文件写进提示词让它自己读", async () => {
+test("Codex 图片与文本只走上传白名单 MCP，关闭本机图片路径工具", async () => {
   const cap: Cap = {};
   await ingestFiles(
     { repoRoot: REPO, dataRoot: tmp() },
@@ -93,15 +283,17 @@ test("图片走 local_image 传给模型,文本文件写进提示词让它自己
         { name: "rows.csv", content_base64: b64("a,b") },
       ],
     },
-    fakeCodex(OK_REPLY, cap),
+    fakeCodex(OK_REPLY.replace("01_a.csv", "01_shot.png"), cap),
   );
   const inputs = cap.inputs as { type: string; text?: string; path?: string }[];
   assert.ok(Array.isArray(inputs));
   const imgs = inputs.filter((i) => i.type === "local_image");
-  assert.equal(imgs.length, 1, "一张图 → 一个 local_image");
-  assert.ok(fs.existsSync(imgs[0]!.path!), "图片要真的落在盘上,模型才读得到");
+  assert.equal(imgs.length, 0, "不得授予任意本机图片路径读取能力");
+  assert.deepEqual(cap.image, { data: PNG, mimeType: "image/png" });
+  assert.equal(fs.existsSync(String(cap.opts!.workingDirectory)), false, "转写结束清理暂存件");
   const text = inputs.find((i) => i.type === "text")!.text!;
   assert.ok(text.includes("rows.csv"), "文本文件名要写进提示词");
+  assert.ok(text.includes("01_shot.png"), "关闭 local_image 后仍须向模型列出安全图片文件名");
   assert.ok(cap.schema, "必须强制结构化产出,否则解析全靠运气");
 });
 
@@ -131,7 +323,7 @@ test("文件名是不可信输入:路径穿越要被净化,原名只作为出处
   );
   const dir = String(cap.opts!.workingDirectory);
   assert.ok(dir.startsWith(path.resolve(root) + path.sep), "暂存目录必须在数据根内");
-  const files = fs.readdirSync(dir);
+  const files = cap.names!;
   assert.equal(files.length, 1);
   assert.ok(!files[0]!.includes(".."), `落盘名不许含 ..:${files[0]}`);
   assert.ok(!fs.existsSync(path.join(root, "..", "passwd.txt")), "不许写到数据根之外");
@@ -255,8 +447,8 @@ test("🔴 扩展名是用户给的,内容也得对得上 —— 否则 PDF 改�
     );
   }
   // 真图片 / 真文本照过(不是把门一律关死)
-  await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "ok.png", content_base64: PNG }] }, fakeCodex(OK_REPLY));
-  await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "ok.csv", content_base64: b64("代码,数量\n300308,100") }] }, fakeCodex(OK_REPLY));
+  await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "ok.png", content_base64: PNG }] }, fakeCodex(OK_REPLY.replace("01_a.csv", "01_ok.png")));
+  await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "ok.csv", content_base64: b64("代码,数量\n300308,100") }] }, fakeCodex(OK_REPLY.replace("01_a.csv", "01_ok.csv")));
 });
 
 test("超大 base64 在**解码之前**就被拒(解码本身要扫一遍、要分配内存)", async () => {
@@ -301,9 +493,9 @@ test("🔴 失败时暂存目录要清掉 —— 里面是用户的私密截图,
   );
   assert.deepEqual(fs.existsSync(importDir) ? fs.readdirSync(importDir) : [], [], "转写失败后同样不许有残留");
 
-  // 成功则保留原件:草稿要逐条确认,人得能回去核对
+  // 成功也清理本次暂存件，用户在产品外选择的原文件不受影响。
   const r = await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(OK_REPLY));
-  assert.ok(fs.existsSync(path.join(root, r.dir)), "成功的批次要留着");
+  assert.equal(fs.existsSync(path.join(root, r.dir)), false, "成功的批次不残留上传原件");
 });
 
 test("🔴 导入要认用户配的 provider —— 直接 makeConfig 会恒定落到内置默认,用户配了等于没配", async () => {

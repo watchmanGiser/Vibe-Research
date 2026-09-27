@@ -8,6 +8,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common import record_error, redact_text  # noqa: E402
@@ -39,3 +41,17 @@ def test_record_error_走脱敏():
     err = res["errors"][0]["error"]
     assert "alice@company.com" not in err and "/Users/alice" not in err, err
     assert "[REDACTED_EMAIL]" in err and "[USER]" in err, err
+
+
+@pytest.mark.parametrize("path", [
+    r"C:\Users\alice\probe.py", r"D:\Users\alice\probe.py",
+    r"c:\users\alice\probe.py", r"C:\\Users\\alice\\probe.py",
+    r"D:\Users\alice smith\probe.py",
+    "D:/Users/alice/probe.py", "/home/alice/probe.py", "/Users/alice/probe.py",
+])
+def test_real_and_escaped_home_paths_redacted_in_error_envelope(path):
+    res = {"errors": []}
+    record_error(res, "synthetic", "test", RuntimeError(f'File "{path}", line 7'))
+    text = res["errors"][0]["error"]
+    assert "alice" not in text
+    assert "[USER]" in text and "probe.py" in text and "line 7" in text

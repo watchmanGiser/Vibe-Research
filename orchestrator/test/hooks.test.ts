@@ -6,7 +6,9 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { makeConfig } from "../src/config.ts";
-import { MAX_STOP_BLOCKS, buildHooksJson, contextMatchesCwd, hookHash, hookKey, installHooks, mergeBlock, normalizedHandler, readHookLog, readStopFailed, summarizeHookLog, writeHookContext } from "../src/hooks.ts";
+import { MAX_STOP_BLOCKS, MAX_TOTAL_STOP_BLOCKS, buildHooksJson, contextMatchesCwd, hookHash, hookKey, installHooks, mergeBlock, normalizedHandler, readHookLog, readStopFailed, STOP_FAILED_REL, summarizeHookLog, writeHookContext } from "../src/hooks.ts";
+import { CodexEngineLifecycle } from "../src/engines/codex_lifecycle.ts";
+import type { LifecycleContext } from "../src/engine.ts";
 import { writeJson } from "../src/fsutil.ts";
 
 
@@ -78,7 +80,7 @@ function runHook(name: string, cwd: string, input: Record<string, unknown>): { s
   return { stdout: p.stdout, status: p.status };
 }
 
-test("Stop 钩子脚本:缺产物 → block(最多 MAX_STOP_BLOCKS 次)→ 仍不合格则 continue:false + 终止标记(不算正常收工);产物合格 → 放行;无上下文 → 放行但出声", () => {
+test("Stop 钩子脚本:缺产物 → block(最多 MAX_STOP_BLOCKS 次无推进空转)→ 仍不合格则 continue:false + 终止标记(不算正常收工);产物合格 → 放行;无上下文 → 放行但出声", () => {
   const repo = tmpRepo();
   const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "r1" });
   const runDir = cfg.runDir;
@@ -91,13 +93,19 @@ test("Stop 钩子脚本:缺产物 → block(最多 MAX_STOP_BLOCKS 次)→ 仍�
     r = runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: i > 0 });
     const out = JSON.parse(r.stdout);
     assert.equal(out.decision, "block");
-    assert.ok(out.reason.includes("缺产物:stages/profile.json") && out.reason.includes(`第 ${i + 1}/${MAX_STOP_BLOCKS} 次`));
+    assert.ok(out.reason.includes("缺产物:stages/profile.json") && out.reason.includes(`无推进空转 ${i + 1}/${MAX_STOP_BLOCKS}`));
   }
-  r = runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: true }); // 第三次仍缺 → 终止本轮
+  r = runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: true }); // 第 MAX+1 次仍无推进 → 终止本轮
   const out = JSON.parse(r.stdout);
   assert.equal(out.continue, false);
+  // 终止原因要说对:这条是"一直空转",不能印成累计上限那句(两条分支的文案互换也不会被 blocks 断言抓到)
+  assert.match(out.stopReason, /连续 \d+ 次拦截之间都没有新增计算/);
+  assert.doesNotMatch(out.stopReason, /累计拦截已达上限/);
   const marker = readStopFailed(runDir);
   assert.ok(marker && marker.stage === "profile" && marker.attempt === 1 && marker.blocks === MAX_STOP_BLOCKS);
+  // marker.idleStreak = **已经发生过的**连续空转拦截数(= MAX_STOP_BLOCKS),不是本次判定值(MAX+1)。
+  // 这条钉子防的是"顺手把两处统一成同一个值":统一成判定值会让编排器文案多算一次空转。
+  assert.equal(marker.idleStreak, MAX_STOP_BLOCKS);
   // 新一轮(attempt 2):计数独立;产物齐全(取数无账本 → 账本类错误不 block,留给编排器)→ 放行
   writeHookContext(cfg, "profile", 2);
   writeJson(path.join(runDir, "stages", "profile.json"), { stage: "profile", status: "incomplete", summary: "x", evidence_ids: [], calculation_ids: [], gaps: [{ operation: "fetch_quote", reason_code: "source_failed", detail: "x" }, { operation: "fetch_profile", reason_code: "source_failed", detail: "x" }, { operation: "fetch_trade_calendar", reason_code: "source_failed", detail: "x" }], quote_decision: "unknown_unverified", quote_decision_reason: "x", moat_tag: "待补" });
@@ -111,6 +119,129 @@ test("Stop 钩子脚本:缺产物 → block(最多 MAX_STOP_BLOCKS 次)→ 仍�
   r = runHook("stop.ts", other, { hook_event_name: "Stop", stop_hook_active: false });
   assert.equal(r.stdout, "");
   assert.ok(readHookLog(other).some((e) => e.decision === "error" && /不一致/.test(e.reason ?? "")));
+});
+
+test("Stop 推进感知:新增合法 calc 记录 ⇒ 空转计数重置,合规攒算流不被收工预算误杀(2026-09-05 600519 复现)", () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: repo, runId: "r2" });
+  const runDir = cfg.runDir;
+  writeJson(path.join(runDir, "manifest.json"), { run_id: "r2" });
+  writeHookContext(cfg, "financials", 1);
+  const calcDir = path.join(runDir, "calcs"); fs.mkdirSync(calcDir, { recursive: true });
+  // 模拟合规攒算流:每轮落一个新合法 calc(quarterize→latest_quarter→ttm_sum→yoy→qoq…),
+  // 直到第 MAX+3 轮才写 stage 文件 —— 旧逻辑(无推进感知,MAX=2)在第 3 轮就被终止。
+  let r: ReturnType<typeof runHook>;
+  for (let i = 0; i <= MAX_STOP_BLOCKS + 2; i++) {
+    r = runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: i > 0 });
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.decision, "block", `第 ${i + 1} 轮有新 calc 落盘,必须继续 block 而不是终止`);
+    assert.ok(!("continue" in out), "有推进时不允许 continue:false");
+    // 本轮结束后再落一个新 calc(下一轮拦截时即为"新合法记录")
+    writeJson(path.join(calcDir, `calc_${i}.json`), { calculation_id: `calc-${i}`, function: "ttm_sum", output: { status: "ok", value: 1, details: {} } });
+  }
+  const blocks = readHookLog(runDir).filter((e) => e.decision === "block");
+  assert.equal(blocks.length, MAX_STOP_BLOCKS + 3);
+  assert.ok(blocks.every((b) => (b.idleStreak ?? 1) <= 2), "每次拦截都有新 calc ⇒ idleStreak 不应超过 2");
+  assert.equal(readStopFailed(runDir), null, "全程不得产生终止标记");
+});
+
+test("Stop 推进感知:仅 mtime/文件数变化但无合法 calc(参数文件、函数清单)⇒ 不算推进,空转照累计", () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: repo, runId: "r3" });
+  const runDir = cfg.runDir;
+  writeJson(path.join(runDir, "manifest.json"), { run_id: "r3" });
+  writeHookContext(cfg, "financials", 1);
+  const calcDir = path.join(runDir, "calcs"); fs.mkdirSync(calcDir, { recursive: true });
+  let r: ReturnType<typeof runHook>;
+  for (let i = 0; i <= MAX_STOP_BLOCKS; i++) {
+    r = runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: i > 0 });
+    const out = JSON.parse(r.stdout);
+    if (i < MAX_STOP_BLOCKS) {
+      assert.equal(out.decision, "block");
+      assert.ok(out.reason.includes(`无推进空转 ${i + 1}/${MAX_STOP_BLOCKS}`), "无合法 calc ⇒ 空转必须逐次累计");
+    } else {
+      assert.equal(out.continue, false, "纯参数文件/清单写盘 MAX 次后必须终止");
+      break;
+    }
+    // 只落"非计算记录"的文件:args 前缀参数文件 + calculate 函数清单(00_list.json 形态)
+    writeJson(path.join(calcDir, `args_${i}.json`), { period: "TTM", unit: "亿元" });
+    writeJson(path.join(calcDir, "00_list.json"), { calc_version: "0.3.2", functions: { ttm_sum: "近四季合计" } });
+  }
+  const marker = readStopFailed(runDir);
+  assert.ok(marker && marker.stage === "financials" && marker.attempt === 1);
+  assert.equal(marker.blocks, MAX_STOP_BLOCKS);
+});
+
+test("Stop 累计拦截硬上限:一直有新计算落盘也不能无限 block,累计到 MAX_TOTAL_STOP_BLOCKS 次仍无产物则终止本轮", () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: repo, runId: "r4" });
+  const runDir = cfg.runDir;
+  writeJson(path.join(runDir, "manifest.json"), { run_id: "r4" });
+  writeHookContext(cfg, "financials", 1);
+  const calcDir = path.join(runDir, "calcs"); fs.mkdirSync(calcDir, { recursive: true });
+  // 一直在算、就是不写 stage 文件:推进感知每轮把空转计数按回 1,只有累计上限拦得住这种 turn
+  for (let i = 0; i < MAX_TOTAL_STOP_BLOCKS; i++) {
+    const out = JSON.parse(runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: i > 0 }).stdout);
+    assert.equal(out.decision, "block", `第 ${i + 1} 次还在累计上限内,应继续 block`);
+    writeJson(path.join(calcDir, `calc_${i}.json`), { calculation_id: `calc-${i}`, function: "ttm_sum", output: { status: "ok", value: 1, details: {} } });
+  }
+  const out = JSON.parse(runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: true }).stdout);
+  assert.equal(out.continue, false, "累计到上限必须终止本轮,哪怕这一轮仍有新计算落盘");
+  assert.match(out.stopReason, /累计拦截已达上限/);
+  const marker = readStopFailed(runDir);
+  assert.ok(marker && marker.blocks === MAX_TOTAL_STOP_BLOCKS && marker.idleStreak === 1,
+    "终止标记要分得清两种原因:累计拦够了,但最后一次拦截前刚有新计算(空转 1)");
+});
+
+test("Stop 推进感知的边界:建空目录 / 只删不加 / 点开头文件都不算推进;重算覆盖同名文件算推进", () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: repo, runId: "r5" });
+  const runDir = cfg.runDir;
+  writeJson(path.join(runDir, "manifest.json"), { run_id: "r5" });
+  writeHookContext(cfg, "financials", 1);
+  const calcDir = path.join(runDir, "calcs");
+  const put = (file: string, id: string) => writeJson(path.join(calcDir, file), { calculation_id: id, function: "ttm_sum", output: { status: "ok", value: 1, details: {} } });
+  const block = () => JSON.parse(runHook("stop.ts", runDir, { hook_event_name: "Stop", stop_hook_active: true }).stdout) as { decision: string; reason: string };
+  assert.equal(block().decision, "block");   // calcs/ 还不存在:第一次拦截建立比较基线
+  // 编排器刚建好空 calcs/:目录从"不存在"变成"存在但空",两者必须同指纹,否则白送一轮预算
+  fs.mkdirSync(calcDir, { recursive: true });
+  assert.ok(block().reason.includes(`无推进空转 2/${MAX_STOP_BLOCKS}`), "建一个空 calcs/ 不是推进");
+  put("01_ttm.json", "calc-a");
+  assert.ok(block().reason.includes(`无推进空转 1/${MAX_STOP_BLOCKS}`), "第一条计算落盘是推进,空转回 1");
+  // run_tools 允许同一阶段覆盖自己的 output_file:重算后条数不变、id 变 ⇒ 是推进,空转必须回 1
+  put("01_ttm.json", "calc-b");
+  assert.ok(block().reason.includes(`无推进空转 1/${MAX_STOP_BLOCKS}`), "重算覆盖同名文件是推进,不能当空转");
+  // 只删不加:记录集合同样变样,但这不是推进 ⇒ 空转要继续累计(否则删文件就能刷掉预算)
+  fs.rmSync(path.join(calcDir, "01_ttm.json"));
+  assert.ok(block().reason.includes(`无推进空转 2/${MAX_STOP_BLOCKS}`), "删掉一条计算记录不算推进");
+  // 点开头的文件产物侧根本读不到(fsutil.listFiles 跳过),这里也必须跳过,否则是一条刷预算的暗道
+  put(".sneak.json", "calc-sneaky");
+  assert.ok(block().reason.includes(`无推进空转 3/${MAX_STOP_BLOCKS}`), "点开头的文件不算合法计算记录");
+});
+
+test("终止提示要对编排器说实话:一直在算却写不出产物,不能印成「最后连续 1 次无新增计算」", () => {
+  const repo = tmpRepo();
+  const cfg = makeConfig({ symbol: "600519", market: "SH", repoRoot: repo, runId: "r6" });
+  writeJson(path.join(cfg.runDir, "manifest.json"), { run_id: "r6" });
+  const life = new CodexEngineLifecycle(cfg, {} as never);
+  const ctx = { log: () => {}, markProtected: () => {}, unmarkProtected: () => {}, manifest: { hooks: {} } } as unknown as LifecycleContext;
+  const say = (idleStreak: number) => {
+    writeJson(path.join(cfg.runDir, STOP_FAILED_REL), { stage: "financials", attempt: 1, problems: ["缺产物:stages/financials.json"], blocks: MAX_TOTAL_STOP_BLOCKS, idleStreak, ts: "2026-09-20T00:00:00.000Z" });
+    return life.afterTurn(ctx, "financials", 1) ?? "";
+  };
+  // idleStreak=1 的编码含义是"最后一次拦截前刚有新计算落盘",不是"有 1 次空转"。
+  // 照字面印出来会把一个全程在算的 turn 说成空转 —— 正好与"两种终止要分得开"的目的相反。
+  const busy = say(1);
+  assert.match(busy, new RegExp(`累计拦截 ${MAX_TOTAL_STOP_BLOCKS} 次`));
+  assert.match(busy, /仍有新计算落盘/);
+  assert.doesNotMatch(busy, /连续 1 次无新增计算/);
+  // 真空转那一侧照常报连续次数
+  assert.match(say(MAX_STOP_BLOCKS), new RegExp(`最后连续 ${MAX_STOP_BLOCKS} 次无新增计算`));
+  // 0 = 日志来自没有 idleStreak 字段的旧版本(升级后累计拦到上限才走得到)⇒ **不知道**,
+  // 既不能说"连续 0 次",更不能落进 else 说"仍有新计算落盘" —— 那是替它下了一个没有依据的结论
+  const unknown = say(0);
+  assert.match(unknown, new RegExp(`累计拦截 ${MAX_TOTAL_STOP_BLOCKS} 次,仍不合格`));
+  assert.doesNotMatch(unknown, /新计算落盘|无新增计算/);
 });
 
 test("PreToolUse 钩子脚本:自跑取数脚本 / 读禁区 / 改写受保护产物 / 联网 → block;普通 calc 命令 → 放行;apply_patch 触及 fetch/ → block", () => {

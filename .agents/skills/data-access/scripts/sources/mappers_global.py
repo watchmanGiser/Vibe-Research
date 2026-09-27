@@ -52,11 +52,18 @@ def kline_map(result: list, ctx: dict) -> dict:
         return empty("K 线无有效收盘价")
     evs = series_summary(ctx, rows, field_prefix="kline_close", value_key="close", unit=mu, date_key="date")
     per = f"{str(rows[0]['date'])[:10]}..{str(rows[-1]['date'])[:10]}"
-    evs.append(ev(ctx, "kline_window_high", max(r["high"] for r in rows if r.get("high")), mu, per))
-    evs.append(ev(ctx, "kline_window_low", min(r["low"] for r in rows if r.get("low")), mu, per))
+    gaps = []
+    for key, fn in (("high", max), ("low", min)):
+        values = [_num(r.get(key)) for r in rows]
+        # 缺任一条不能把不完整窗口称为全窗口极值。
+        if any(v is None for v in values):
+            gaps.append(key)
+        else:
+            evs.append(ev(ctx, f"kline_window_{key}", fn(values), mu, per))
     if rows[-1].get("volume") is not None:
         evs.append(ev(ctx, "kline_volume_latest", rows[-1]["volume"], "股", str(rows[-1]["date"])[:10], currency="n/a"))
-    return out(evs, extra={"last5": rows[-5:], "interval": ctx["args"].get("interval", "1d")})
+    return out(evs, extra={"last5": rows[-5:], "interval": ctx["args"].get("interval", "1d")},
+               status="partial" if gaps else None, degraded="窗口最高/最低价缺失，未计算极值" if gaps else None)
 
 
 def indicators_map(result: dict, ctx: dict) -> dict:
@@ -156,6 +163,11 @@ _YF_KEYS = {"income": [("totalRevenue", "revenue"), ("grossProfit", "gross_profi
 
 _CCY_UNIT = {"USD": "美元", "HKD": "港元", "CNY": "人民币", "EUR": "欧元", "JPY": "日元", "GBP": "英镑", "TWD": "新台币", "KRW": "韩元", "SGD": "新加坡元", "CAD": "加元", "AUD": "澳元", "CHF": "瑞士法郎", "INR": "卢比"}
 
+def _report_currency(value: Any) -> tuple[Optional[str], Optional[str]]:
+    raw = str(value or "").strip()
+    code = _CCY_OF_UNIT.get(raw) or {v: k for k, v in _CCY_UNIT.items()}.get(raw) or raw.upper()
+    return (_CCY_UNIT[code], code) if code in _CCY_UNIT else (None, None)
+
 
 def _fin_unit(result: dict, ctx: dict) -> tuple:
     """Yahoo 财务类金额按 financialCurrency 计价(港股公司常以人民币 / 美元列报),不按上市地币种。返回 (unit, currency_code)。"""
@@ -224,6 +236,7 @@ def em_financials_global_map(result: list, ctx: dict) -> dict:
     if not result:
         return empty(f"东财全球三表 {st} 为空(标的未收录或 secucode 解析失败)")
     evs = []
+    unknown_currency = False
     for r in result:
         name = str(r.get("ITEM_NAME") or "")
         if not name or not any(s in name for s in _EM_SUBSTR.get(st, ())):
@@ -231,8 +244,10 @@ def em_financials_global_map(result: list, ctx: dict) -> dict:
         v = _num(r.get("AMOUNT"))
         if v is None:
             continue
-        cur_name = str(r.get("CURRENCY") or "")
-        unit = cur_name if cur_name in _CCY_OF_UNIT else _mu(ctx)
+        unit, ccy = _report_currency(r.get("CURRENCY"))
+        if unit is None:
+            unknown_currency = True
+            continue
         period = str(r.get("REPORT_DATE") or "")[:10]
         field = _EM_EXACT.get(name, "fs_item")
         if field == "fs_item" and "摊薄每股收益" in name:
@@ -245,15 +260,16 @@ def em_financials_global_map(result: list, ctx: dict) -> dict:
         note = f"{rep} {r.get('ACCOUNT_STANDARD') or ''} 科目「{name}」".strip()
         # 同一 REPORT_DATE 可同时有单季(2026/Q3)与累计(2026/Q9)两种口径 → record_key 必须带 REPORT,否则同 id 不同值
         rk = f"{rep}|{name}"
-        evs.append(ev(ctx, field, v, unit, period, currency=_CCY_OF_UNIT.get(unit.replace("/股", ""), None), as_of=period, record_key=rk, note=note))
+        evs.append(ev(ctx, field, v, unit, period, currency=ccy, as_of=period, record_key=rk, note=note))
         y = _num(r.get("YOY_RATIO"))
         if y is not None and field != "fs_item":
             evs.append(ev(ctx, f"{field}_yoy", y, "%", period, currency="n/a", as_of=period, record_key=rk, note=f"「{name}」同比(东财 YOY_RATIO;{rep})"))
         if len(evs) >= 160:
             break
     if not evs:
-        return empty(f"东财三表 {st} 无匹配科目")
-    return out(evs, extra={"rows": len(result), "periods": sorted({str(r.get('REPORT_DATE'))[:10] for r in result}, reverse=True)[:8]})
+        return empty(f"东财三表 {st} 列报币种缺失或未识别" if unknown_currency else f"东财三表 {st} 无匹配科目")
+    return out(evs, extra={"rows": len(result), "periods": sorted({str(r.get('REPORT_DATE'))[:10] for r in result}, reverse=True)[:8]},
+               status="partial" if unknown_currency else None, degraded="部分科目币种未识别，已跳过金额" if unknown_currency else None)
 
 
 _EM_IND = [("OPERATE_INCOME", "revenue", "money"), ("GROSS_PROFIT", "gross_profit", "money"), ("GROSS_PROFIT_RATIO", "gross_margin", "%"), ("PARENT_HOLDER_NETPROFIT", "net_profit_parent", "money"), ("HOLDER_PROFIT", "net_profit_parent", "money"),
@@ -266,19 +282,22 @@ def em_key_indicators_global_map(result: list, ctx: dict) -> dict:
     if not result:
         return empty("东财 GMAININDICATOR 为空")
     evs = []
+    unknown_currency = False
     for r in result:
         period = str(r.get("REPORT_DATE") or "")[:10]
-        cur_name = str(r.get("CURRENCY") or "")
-        mu = cur_name if cur_name in _CCY_OF_UNIT else _mu(ctx)
+        mu, ccy = _report_currency(r.get("CURRENCY"))
         rep = f"{r.get('REPORT') or ''}|{r.get('REPORT_TYPE') or ''}"
         note = f"{rep.replace('|', ' ')} 东财关键指标".strip()
         for k, f, u in _EM_IND:
             v = _num(r.get(k))
             if v is None:
                 continue
-            unit = u.replace("money", mu)
-            evs.append(ev(ctx, f, v, unit, period, currency="n/a" if unit in ("%", "倍") else _CCY_OF_UNIT.get(unit.replace("/股", ""), None), as_of=period, record_key=rep, note=note))
-    return out(evs) if evs else empty("东财关键指标无可用字段")
+            if "money" in u and mu is None:
+                unknown_currency = True
+                continue
+            unit = u.replace("money", mu or "")
+            evs.append(ev(ctx, f, v, unit, period, currency="n/a" if unit in ("%", "倍") else ("HKD" if u == "港元/股" else ccy), as_of=period, record_key=rep, note=note))
+    return out(evs, status="partial" if unknown_currency else None, degraded="列报币种未识别，已跳过金额，保留比率" if unknown_currency else None) if evs else empty("东财关键指标无可用字段或列报币种未知")
 
 
 def em_fund_flow_global_map(result: list, ctx: dict) -> dict:
@@ -287,7 +306,9 @@ def em_fund_flow_global_map(result: list, ctx: dict) -> dict:
     mu = _mu(ctx)
     rows = sorted(result, key=lambda r: r["date"])
     evs = series_summary(ctx, rows, field_prefix="main_net_inflow_daily", value_key="main_net", unit=mu, date_key="date")
-    evs.append(ev(ctx, "main_net_inflow_pct_latest", rows[-1].get("main_pct"), "%", rows[-1]["date"], currency="n/a"))
+    pct = _num(rows[-1].get("main_pct"))
+    if pct is not None:
+        evs.append(ev(ctx, "main_net_inflow_pct_latest", pct, "%", rows[-1]["date"], currency="n/a"))
     return out(evs, status="partial" if len(rows) < 5 else None, degraded=None if len(rows) >= 5 else f"仅 {len(rows)} 条(push2his 不通时回落 push2delay)")
 
 
@@ -380,7 +401,7 @@ def sec_frame_map(result: dict, ctx: dict) -> dict:
 
 def finra_short_map(result: list, ctx: dict) -> dict:
     if not result:
-        return out([ev(ctx, "short_volume_points", 0, "天", today_str(), currency="n/a")], status="partial", degraded="FINRA 近期无该票记录(小票 / 非 CNMS 覆盖)")
+        return out([ev(ctx, "short_volume_points", 0, "天", today_str(), currency="n/a")], status="partial", degraded="FINRA 已取得的日文件内未检出该标的记录，原因未核实；未取得的日期不代表无成交，也不能推断市场覆盖范围")
     rows = sorted(result, key=lambda r: r["date"])
     evs = rows_fields(ctx, rows, [("ratio", "short_volume_ratio", "小数"), ("short", "short_volume", "股"), ("total", "total_volume_finra", "股")], period_of=lambda r: f"{r['date'][:4]}-{r['date'][4:6]}-{r['date'][6:8]}",
                       key_of=lambda r: r["date"], note_of=lambda r: "FINRA Reg SHO 日度空头成交(CNMS)")

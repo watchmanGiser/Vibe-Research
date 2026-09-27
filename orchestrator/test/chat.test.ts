@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import "../src/finance/register.ts"; // 测试文件也是入口:插件要先注册
-import { ChatError, chatSend, chatSessionCount, resetChatSessions, translateHeadlines } from "../src/chat.ts";
-import { LocalAgentError } from "../src/local_agent_runtime.ts";
+import { ChatError, chatSend, chatSessionCount, llmProbe, resetChatSessions, translateHeadlines } from "../src/chat.ts";
+import { LocalAgentError, type LocalAgentId } from "../src/local_agent_runtime.ts";
 import type { LlmOverride } from "../src/runtime_provider.ts";
 
 // ⚠️ 用 fileURLToPath 而不是 new URL(...).pathname —— 本机仓库路径含中文,
@@ -50,6 +50,43 @@ function fakeCodex(reply: string, cap?: Cap) {
 }
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "vra-chat-"));
+
+test("ordinary Agent tools are passed to native Codex and Claude while internal callers remain tool-free", async () => {
+  const root = tmp();
+  const cap: Cap = { prompts: [] };
+  const controlledMcp = { serverName: "vra_assistant", command: process.execPath, args: ["adapter.ts"], env: { VRA_ASSISTANT_URL: "http://127.0.0.1:1", VRA_ASSISTANT_TOKEN: "test" }, allowedTools: ["mcp__vra_assistant__search_web"], maxTurns: 40 };
+  try {
+    await chatSend({ repoRoot: REPO, dataRoot: root, python: TEST_PYTHON, controlledMcp, persistent: false, preambleText: "可联网" }, { message: "查网页" }, fakeCodex("好", cap));
+    const overrides = cap.codexOptions!.configOverrides as string[];
+    assert.ok(overrides.some((x) => x.includes("adapter.ts") && x.includes("search_web") && x.includes("approve") && /"required"\s*=\s*true/.test(x)), JSON.stringify(overrides));
+    let native = false;
+    await chatSend({ repoRoot: REPO, dataRoot: root, controlledMcp, persistent: false, preambleText: "可联网", localAgentRunner: async (agent, opts) => { native = true; assert.equal(agent, "claude"); assert.deepEqual(opts.controlledMcp, controlledMcp); return "好"; } }, { message: "查网页", llm: { provider: "cli-claude" } });
+    assert.equal(native, true);
+  } finally { resetChatSessions(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#44 MCP 发现与线程使用同一产品 CODEX_HOME，不枚举传入的其他配置目录", async () => {
+  resetChatSessions();
+  const root = tmp();
+  const foreignHome = tmp();
+  fs.writeFileSync(path.join(foreignHome, "config.toml"), '[mcp_servers.ghost_global]\ncommand = "ghost-bin"\nenabled = false\n');
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = foreignHome;
+  const cap: Cap = { prompts: [] };
+  try {
+    await chatSend({ repoRoot: REPO, dataRoot: root, python: TEST_PYTHON }, { session: "issue44", message: "你好" }, fakeCodex("好", cap));
+    const overrides = cap.codexOptions?.configOverrides as string[];
+    const mcp = overrides.find((entry) => entry.startsWith("mcp_servers="));
+    assert.ok(mcp);
+    assert.ok(!mcp.includes("ghost_global"), mcp);
+    assert.notEqual((cap.codexOptions?.env as Record<string, string>).CODEX_HOME, foreignHome);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+    resetChatSessions();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(foreignHome, { recursive: true, force: true });
+  }
+});
 
 test("对话线程的硬约束必须真的传给引擎:无本地工具 / 只读 / 不联网", async () => {
   resetChatSessions();
@@ -153,7 +190,7 @@ test("本轮资料召回集合变化时必须换新线程，旧片段不能残�
 
   resetChatSessions();
   const localPrompts: string[] = [];
-  const localRunner = async (_agent: "claude", opts: { userPrompt: string }) => {
+  const localRunner = async (_agent: LocalAgentId, opts: { userPrompt: string }) => {
     localPrompts.push(opts.userPrompt);
     return localPrompts.length === 1 ? `第一轮引用 [资料:${id} p.2]` : "第二轮回答";
   };
@@ -391,7 +428,7 @@ test("Claude 订阅走本机 Agent 适配器，不会回落到 Codex；会话历
   resetChatSessions();
   const root = tmp();
   const calls: { systemPrompt: string; userPrompt: string; outputSchema?: unknown }[] = [];
-  const runner = async (_agent: "claude", opts: { systemPrompt: string; userPrompt: string; outputSchema?: unknown }) => {
+  const runner = async (_agent: LocalAgentId, opts: { systemPrompt: string; userPrompt: string; outputSchema?: unknown }) => {
     calls.push(opts);
     return calls.length === 1 ? "第一轮回答" : "第二轮回答";
   };
@@ -407,6 +444,35 @@ test("Claude 订阅走本机 Agent 适配器，不会回落到 Codex；会话历
   assert.equal(chatSessionCount(), 1);
 });
 
+test("WorkBuddy / CodeBuddy 走自己的本机适配器，不会回落到 Codex", async () => {
+  resetChatSessions();
+  let seen: LocalAgentId | null = null;
+  const result = await chatSend(
+    {
+      repoRoot: REPO,
+      dataRoot: tmp(),
+      localAgentRunner: async (agent) => { seen = agent; return "CodeBuddy 回答"; },
+    },
+    { session: "codebuddy-real", message: "第一问", llm: { provider: "cli-codebuddy" } },
+    () => { throw new Error("不应创建 Codex"); },
+  );
+  assert.equal(seen, "codebuddy");
+  assert.equal(result.reply, "CodeBuddy 回答");
+});
+
+test("内部长任务保留显式期限，普通对话仍三分钟，非法期限不启动模型", async (t) => {
+  const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const seen: number[] = [];
+  const opts = { repoRoot: REPO, dataRoot: root, persistent: false,
+    localAgentRunner: async (_agent: LocalAgentId, call: { timeoutMs?: number }) => { seen.push(call.timeoutMs!); return "资料不足"; } };
+  const req = { session: "deadline-test", message: "长资料", llm: { provider: "cli-codebuddy" } };
+  await chatSend(opts, req);
+  await chatSend({ ...opts, timeoutMs: 600_000 }, req);
+  for (const timeoutMs of [0, Number.NaN, 600_001]) await assert.rejects(() => chatSend({ ...opts, timeoutMs }, req), /超时/);
+  assert.deepEqual(seen, [180_000, 600_000]);
+});
+
 test("Claude 本地会话总量有上限，持续换 session 会淘汰最旧空闲会话", async () => {
   resetChatSessions();
   const root = tmp();
@@ -420,6 +486,69 @@ test("Claude 本地会话总量有上限，持续换 session 会淘汰最旧空�
     );
   }
   assert.equal(chatSessionCount(), 64);
+});
+
+test("Codex 同一会话并发被挡住，其他会话可用，失败或取消后可重试", async () => {
+  resetChatSessions();
+  const root = tmp();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const factory = (() => ({ startThread: () => ({ runStreamed: async (_prompt: string, opts: { signal: AbortSignal }) => {
+    const n = ++calls;
+    return { events: (async function* () {
+      if (n === 1) { entered(); await blocked; throw new Error("synthetic failure"); }
+      if (n === 4) { yield { type: "turn.failed", error: { message: "synthetic failure" } }; return; }
+      if (opts.signal.aborted) throw new Error("cancelled");
+      yield { type: "item.completed", item: { type: "agent_message", text: "回答" } };
+    })() };
+  } }) })) as never;
+  const options = { repoRoot: REPO, dataRoot: root };
+  const request = { session: "codex-busy", message: "问题" };
+  const first = chatSend(options, request, factory);
+  const failed = assert.rejects(first, ChatError);
+  await started;
+  try {
+    await assert.rejects(chatSend(options, request, factory), e => e instanceof ChatError && e.code === "chat_busy");
+    assert.equal(calls, 1, "拒绝之前不得触发第二轮模型调用");
+    assert.equal((await chatSend(options, { ...request, session: "independent" }, factory)).reply, "回答");
+  } finally { release(); await failed; }
+  assert.equal((await chatSend(options, request, factory)).reply, "回答");
+  await assert.rejects(chatSend(options, request, factory), ChatError);
+  assert.equal((await chatSend(options, request, factory)).reply, "回答");
+  const ac = new AbortController(); ac.abort();
+  await assert.rejects(chatSend({ ...options, signal: ac.signal }, request, factory), ChatError);
+  assert.equal((await chatSend(options, request, factory)).reply, "回答");
+});
+
+test("Codex 流式请求处理中取消后释放会话锁", async () => {
+  resetChatSessions();
+  const options = { repoRoot: REPO, dataRoot: tmp() };
+  const request = { session: "codex-inflight-cancel", message: "问题" };
+  const ac = new AbortController();
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let calls = 0;
+  const factory = (() => ({ startThread: () => ({ runStreamed: async (_prompt: string, opts: { signal: AbortSignal }) => {
+    const n = ++calls;
+    return { events: (async function* () {
+      if (n === 1) {
+        await new Promise<void>((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+          entered();
+        });
+      }
+      yield { type: "item.completed", item: { type: "agent_message", text: "取消后的回答" } };
+    })() };
+  } }) })) as never;
+  const pending = chatSend({ ...options, signal: ac.signal }, request, factory);
+  const cancelled = assert.rejects(pending, ChatError);
+  await started;
+  await assert.rejects(chatSend(options, request, factory), e => e instanceof ChatError && e.code === "chat_busy");
+  ac.abort(); await cancelled;
+  assert.equal((await chatSend(options, request, factory)).reply, "取消后的回答");
+  assert.equal(calls, 2, "被挡住的并发不能调用模型，取消后的重试可以");
 });
 
 test("Claude 同一会话上一轮未结束时拒绝并发，避免重复计费与历史乱序", async () => {
@@ -451,7 +580,7 @@ test("页面取消信号会传进本机 Agent，而不是只断开浏览器请�
   resetChatSessions();
   const root = tmp();
   const ac = new AbortController();
-  const runner = async (_agent: "claude", opts: { signal?: AbortSignal }) => await new Promise<string>((_resolve, reject) => {
+  const runner = async (_agent: LocalAgentId, opts: { signal?: AbortSignal }) => await new Promise<string>((_resolve, reject) => {
     opts.signal?.addEventListener("abort", () => reject(new LocalAgentError("agent_cancelled", "已取消")), { once: true });
   });
   const pending = chatSend(
@@ -588,7 +717,7 @@ test("未知引擎诊断默认收口，不把未识别的内部原文交给浏�
     ),
     (e: unknown) => e instanceof ChatError
       && e.code === "turn_failed"
-      && e.message === "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
+      && e.message === "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
       && !/opaque|diagnostic|secret-value/i.test(e.message),
   );
 });
@@ -616,4 +745,64 @@ test("🔴 浏览器 UI 场景：后端默认缺 key，但用户自己配了 —
   } finally {
     if (before === undefined) delete process.env.MIMO_API_KEY; else process.env.MIMO_API_KEY = before;
   }
+});
+
+/** 假 Codex：从提示词里取出令牌再回复 —— 探针令牌是随机的，静态回放做不了这件事 */
+function echoProbeCodex(cap: Cap, transform: (token: string) => string = (t) => t) {
+  return (codexOptions: Record<string, unknown>) => {
+    cap.codexOptions = codexOptions;
+    return ({
+      startThread(opts: Record<string, unknown>) {
+        cap.opts = opts;
+        cap.threadStarts = (cap.threadStarts ?? 0) + 1;
+        return {
+          id: "t-probe",
+          runStreamed(prompt: string, turnOptions?: Record<string, unknown>) {
+            cap.prompts.push(prompt);
+            if (turnOptions) cap.turnOptions = turnOptions;
+            const token = prompt.match(/probe-[0-9a-f]{16}/)?.[0] ?? "";
+            return Promise.resolve({
+              events: (async function* () {
+                yield { type: "item.completed", item: { type: "agent_message", text: transform(token) } };
+              })(),
+            });
+          },
+        };
+      },
+    }) as never;
+  };
+}
+
+test("连接探针：后端固定令牌、不带资料、一次性线程，走业务对话同一条路，且必须回复本次令牌才算通（#40）", async () => {
+  resetChatSessions();
+  const cap: Cap = { prompts: [] };
+  const root = tmp();
+  const one = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex(cap));
+  const two = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex(cap));
+  assert.equal(one.ok, true);
+  assert.equal(two.ok, true);
+  assert.equal(cap.threadStarts, 2, "每次探针必须新建线程");
+  assert.equal(chatSessionCount(), 0, "探针线程不得进入自由对话会话表");
+  assert.equal(cap.prompts.length, 2);
+  const tokens = cap.prompts.map((p) => p.match(/probe-[0-9a-f]{16}/g) ?? []);
+  for (const [i, p] of cap.prompts.entries()) {
+    assert.equal(tokens[i]!.length, 1, "用户层只有后端生成的一次性令牌");
+    assert.ok(!p.includes("【用户资料库检索结果】"), "探针不得携带任何资料片段");
+    assert.match(p, /对话模式/, "探针与业务对话同一份开场白（真实对话测试，AGENTS.md §5.2）");
+  }
+  assert.notEqual(tokens[0]![0], tokens[1]![0], "令牌一次一换");
+  assert.match(String((cap.codexOptions?.config as Record<string, unknown>)?.developer_instructions), /连接检测/);
+  assert.equal(cap.turnOptions?.outputSchema, undefined, "自由文本回复，不用 schema 把模型圈成只会回填 JSON");
+  assert.equal(cap.opts?.sandboxMode, "read-only");
+  assert.equal(cap.opts?.networkAccessEnabled, false);
+});
+
+test("连接探针：有响应但没回复本次令牌 → 判失败；回复里夹着令牌也算通", async () => {
+  resetChatSessions();
+  const root = tmp();
+  const bad = (e: unknown) => e instanceof ChatError && e.code === "probe_bad_output";
+  await assert.rejects(llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, () => "连接成功")), bad);
+  await assert.rejects(llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, () => "probe-0000000000000000")), bad);
+  const lenient = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, (t) => `好的，${t}`));
+  assert.equal(lenient.ok, true);
 });

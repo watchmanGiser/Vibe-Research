@@ -3,6 +3,7 @@
  * 只读取已合并的产物(evidence / calcs / conflicts / stages / ledger / report),不改任何受保护文件;给非程序员"一眼能看"的产物。
  */
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { gateRegexps, gateStagePatterns, type RunConfig } from "./config.ts";
@@ -99,6 +100,10 @@ function renderStages(){$('#stagetbl').innerHTML=tbl(D.stages.map(s=>({stage:s.s
 function renderConf(){$('#conftbl').innerHTML=tbl(D.conflicts.map(c=>({field:c.field,period:c.period,unit:c.unit,values:c.values.map(v=>v.source+'='+v.value+' ('+v.id+')').join(' | ')})),['field','period','unit','values']);}
 function renderLedger(){$('#ledtbl').innerHTML=tbl(D.ledger,['script','status','exit_code','duration_ms','raw_files','injected']);}
 document.addEventListener('DOMContentLoaded',()=>{renderEv();renderCalc();renderStages();renderConf();renderLedger();$('#reporttext').textContent=D.report||'(无 report.md)';$('#q').addEventListener('input',renderEv);document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>show(b.dataset.t)));show('overview');});`;
+
+// Hash only our compiled renderer, never scripts read from a run artifact.
+// No allow-same-origin: the renderer cannot access API credentials.
+export const VIEWER_CSP = `default-src 'none'; script-src 'sha256-${createHash("sha256").update(JS).digest("base64")}'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; sandbox allow-scripts`;
 
 export function renderHtml(d: ViewerData): string {
   // JSON 数据块:把所有 "<" 转成 \u003c(JSON 合法转义),任何 HTML / </script 载荷都不会被解析器当成标签

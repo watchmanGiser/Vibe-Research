@@ -3,7 +3,8 @@
 Market rules:
   - T+1: cannot sell shares bought today
   - No short selling for retail investors
-  - Price limits: ±10% main board, ±20% ChiNext/STAR, ±5% ST
+  - Ordinary-session limits: main board ±10%, ChiNext/STAR ±20%, Beijing ±30%
+  - ChiNext before 2020-08-24: ±10%; historical ST / IPO exceptions not modelled
   - Minimum lot: 100 shares (odd lots can only be sold, not bought)
   - Commission: ¥5 minimum, 0.025% bilateral
   - Stamp tax: 0.05% sell-side only
@@ -11,6 +12,8 @@ Market rules:
 """
 
 from __future__ import annotations
+
+from datetime import date
 
 import pandas as pd
 
@@ -62,7 +65,7 @@ class ChinaAEngine(BaseEngine):
                     return False
 
         # 3. Price limits, tested at execution time (see _blocked_by_limit).
-        if _blocked_by_limit(self, symbol, direction, bar, _price_limit(symbol)):
+        if _blocked_by_limit(self, symbol, direction, bar, _price_limit(symbol, _bar_date(bar))):
             return False
 
         return True
@@ -171,22 +174,26 @@ def _blocked_by_limit(
     return fill <= lower + tol
 
 
-def _price_limit(symbol: str) -> float:
+def _price_limit(symbol: str, trading_day: date | None = None) -> float:
     """Determine price limit based on board.
 
     Args:
         symbol: Stock code (e.g. 300001.SZ, 688001.SH, 000001.SZ).
 
     Returns:
-        Limit as fraction (0.10, 0.20, or 0.05).
+        Ordinary-session limit. Missing date uses current ordinary-board rules;
+        production bars carry dates. ST and IPO exceptions are disclosed, not inferred.
     """
     code = symbol.split(".")[0] if "." in symbol else symbol
-    # ChiNext (300xxx) / STAR (688xxx): ±20%
-    if code.startswith("300") or code.startswith("688"):
+    # SZSE code table: 300000–309799 shares. Match all accepted ChiNext prefixes.
+    if code.startswith("30"):
+        return 0.10 if trading_day is not None and trading_day < date(2020, 8, 24) else 0.20
+    if code.startswith(("688", "689")):
         return 0.20
-    # ST stocks: ±5% (heuristic: can't fully detect from code alone)
-    # Beijing exchange (8xxxxx): ±30% — simplified to 0.30
-    if code.startswith("8") and len(code) == 6:
+    # Old and new BSE stock codes; pre-BSE history is rejected by the loader.
+    if code.startswith(("43", "83", "87", "88", "92")) and len(code) == 6:
+        if trading_day is not None and trading_day < date(2021, 11, 15):
+            raise ValueError("北交所 2021-11-15 之前的精选层/新三板交易规则未建模")
         return 0.30
     # Main board: ±10%
     return 0.10

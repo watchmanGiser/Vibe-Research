@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import "../src/finance/register.ts";   // Core 不内置词表:未注册就抛错(这正是设计)
-import { checkNumberFidelity, quotedHistory } from "../src/number_fidelity.ts";
+import { checkNumberFidelity, quotedHistory, summarizeFidelityViolations } from "../src/number_fidelity.ts";
+import { currentPlugin } from "../src/plugin.ts";
 
 const CALC = "calc-" + "a".repeat(16);
 const EV = "ev-bbbbbb";
@@ -10,6 +11,14 @@ const EV = "ev-bbbbbb";
 const calcs = new Map([[CALC, { output: { status: "ok", value: 34.07, unit: "倍", display: "34.07 倍", details: null }, inputs: { price: 943.0, eps: 27.68 } }]]);
 const evs = new Map([[EV, { value: 200.42 }]]);
 const n = (report: string, quoted: string[] = []) => checkNumberFidelity(report, evs as never, calcs as never, "300308", quoted).violations;
+
+test("数字检查无内置中文章节豁免；调用方显式传契约", () => {
+  const report = `## 数据缺口\n结果为 99.99 倍 [${CALC}]。`;
+  assert.equal(n(report).length, 1);
+  const p = currentPlugin();
+  assert.deepEqual(checkNumberFidelity(report, evs as never, calcs as never, undefined, [], p.lexicon, p.fidelityExcludedSections).violations, []);
+  assert.deepEqual(checkNumberFidelity(report.replace("数据缺口", "Missing inputs"), evs as never, calcs as never, undefined, [], p.lexicon, ["Missing inputs"]).violations, []);
+});
 
 test("该抓的要抓到:引了真 id 却写别的数", () => {
   // 这正是架构审计点名的缺口 —— 在此之前 validateReport 只查 id 存不存在
@@ -110,6 +119,34 @@ test("证据文本匹配要忽略空白:「12.34 亿元」与「12.34亿」是�
   assert.deepEqual(checkNumberFidelity("## 卡口事件\n- 合同金额 12.34亿 [ev-cccccccccccc]\n", ev, calcMap([])).violations, []);
 });
 
+test("token 原始位置不被同行 ev-id 的数字带偏:公告标题里的 1% 不误判成负数", () => {
+  const id = "ev-316d2facb875";
+  const ev = evMap([[id, "关于控股股东及其一致行动人持股比例变动超过1%整数倍的公告"]]);
+  const got = checkNumberFidelity(`## 推断\n先引另一条线索(ev-1f0fedccd8ee),再写持股比例变动超 1% 整数倍(${id})。`, ev, calcMap([]));
+  assert.deepEqual(got.evidenceViolations, []);
+  assert.equal(got.exact, 1);
+});
+
+test("补跑诊断按原句聚合全部错误数字，并保留同行 id", () => {
+  const calcs = calcMap([{ id: CID, output: { status: "ok", value: 37.4, unit: "倍", display: "37.40 倍" } }]);
+  const got = checkNumberFidelity(rep(`PE 41.90 倍、PEG 0.88 倍 [${CID}]`), evMap([]), calcs);
+  assert.equal(got.violationDetails.length, 2);
+  const summary = summarizeFidelityViolations(got.violationDetails);
+  assert.match(summary, /错误数字=41\.90倍,0\.88倍/);
+  assert.match(summary, new RegExp(CID));
+  assert.equal((summary.match(/原句=/g) ?? []).length, 1, "同一长行只展开一次，避免补跑提示重复刷屏");
+});
+
+test("补跑诊断默认不隐藏第 13 行以后的错误，避免两次重试仍拿不到完整清单", () => {
+  const items = Array.from({ length: 25 }, (_, i) => ({
+    section: "估值", token: `${100 + i}.00倍`, line: `第 ${i + 1} 个错误 ${100 + i}.00 倍`, citedIds: [CID],
+  }));
+  const summary = summarizeFidelityViolations(items);
+  assert.equal((summary.match(/原句=/g) ?? []).length, 25);
+  assert.match(summary, /第 25 个错误 124\.00 倍/);
+  assert.doesNotMatch(summary, /行未展开/);
+});
+
 test("missingDisplay 按每条 calc 自己的版本判,不误杀真旧运行", () => {
   const old = calcMap([{ id: CID, output: { status: "ok", value: 1, unit: "倍" }, ver: "0.3.1" }]);
   assert.equal(checkNumberFidelity(rep(`| PE | 1 倍 | ${CID} |`), evMap([]), old).missingDisplay, false);
@@ -128,6 +165,43 @@ test("整数 calc 输出也不能绕过 display,但 details 里的中间量仍�
   assert.deepEqual(checkNumberFidelity(rep(`景气延续 30 倍锚 [${CID}]`), evMap([]), c2).violations, []);
 });
 
+test("details 中嵌套的计算结果仍必须遵循 display，不能冒充中间量", () => {
+  for (const status of ["ok", "error"]) {
+    const calcs = calcMap([{ id: CID, output: { status: "ok", value: null, unit: "倍", display: "情景比较",
+      details: { scenarios: { base: { status, value: 37.397700293773134, unit: "倍", display: "37.40 倍", details: { anchor: 27.30 } } } } } }]);
+    assert.equal(checkNumberFidelity(rep(`情景估值 37.397700293773134 倍 [${CID}]`), evMap([]), calcs).violations.length, 1);
+    if (status === "ok") {
+      assert.deepEqual(checkNumberFidelity(rep(`情景估值 37.40 倍 [${CID}]`), evMap([]), calcs).violations, []);
+      assert.deepEqual(checkNumberFidelity(rep(`参考锚 27.30 倍 [${CID}]`), evMap([]), calcs).violations, []);
+    }
+  }
+});
+
+test("小数用紧容差(上游 review 反例):details 里是 27.30,报告写 27.35 = 改了数字,必须拦", () => {
+  // 真实 percentile_rank 形状:value=分位(10.66)、details.min=最低 PE(27.30)。
+  // 2e-3 相对容差(整数档)套小数会让 numberBound(27.35,[27.30])→true 放过改写;
+  // 小数档 1e-6 下 0.05 的差远大于容差,必须判违规。
+  const c = calcMap([{ id: CID, output: { status: "ok", value: 10.66, unit: "%", display: "10.66%",
+                                           details: { min: 27.30, median: 28.96, max: 54.97 } } }]);
+  assert.equal(checkNumberFidelity(rep(`| 近五年最低 | 27.35 倍 | ${CID} |`), evMap([]), c).violations.length, 1);
+  // 照抄 details 里的 27.30(两位)是正当引用,放行
+  assert.deepEqual(checkNumberFidelity(rep(`| 近五年最低 | 27.30 倍 | ${CID} |`), evMap([]), c).violations, []);
+});
+
+test("三类可溯源合法写法在 1e-6 紧容差下仍放行(details 副统计量 / 元→亿 / 小数→%)", () => {
+  const c = calcMap([{ id: CID, output: { status: "ok", value: 10.66, unit: "%", display: "10.66%",
+                                           details: { min: 17.661621 } } }]);
+  // ① details 副统计量:17.66 vs 17.661621(四舍五入到两位命中)
+  assert.deepEqual(checkNumberFidelity(rep(`近五年最低 17.66 倍 [${CID}]`), evMap([]), c).violations, []);
+  // ② 量纲换算:272.40 亿 vs inputs 27239985194.41 元(×1e-8 后取两位)
+  const c2 = calcMap([{ id: CID, output: { status: "ok", value: 11, unit: "期", display: "11 期" },
+                        inputs: { cumulative: [{ value: 27239985194.41 }] } }]);
+  assert.deepEqual(checkNumberFidelity(rep(`单季扣非 272.40 亿元 [${CID}]`), evMap([]), c2).violations, []);
+  // ③ 小数→百分比:19.52% vs details.range_over_mean 0.1952(×100 后取两位)
+  const c3 = calcMap([{ id: CID, output: { status: "ok", value: 1.21, unit: "倍", display: "1.21 倍",
+                                           details: { range_over_mean: 0.19524189261031363 } } }]);
+  assert.deepEqual(checkNumberFidelity(rep(`一致预期分歧 19.52% [${CID}]`), evMap([]), c3).violations, []);
+});
 test("无符号 token 不许绑到带负号的文本:方向不能反", () => {
   const ev = evMap([["ev-dddddddddddd", "同比 -1.92%"]]);
   const calcs = calcMap([{ id: CID, output: { status: "ok", value: 1, unit: "倍", display: "1.00 倍" } }]);

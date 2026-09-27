@@ -5,10 +5,11 @@
  *    当纯文本贴出来就是一屏星号（看着像模型答坏了，其实是没渲染）；
  *    而用户打的字里出现 markdown 记号是巧合，不该被解释成格式。
  */
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { cleanAutoLinks } from "./cleanAutoLinks";
 
 import { cn } from "../lib/cn";
 import type { AiMsg } from "./useAiChat";
@@ -17,6 +18,8 @@ export interface AiMessagesProps {
   msgs: AiMsg[];
   loading: boolean;
   err: string | null;
+  info?: string | null;
+  renderReply?: (reply: string) => ReactNode;
   /** 空对话时那条说明（免责声明一类，行业相关，由垂类给） */
   notice?: string;
   /** 空对话时可点的问题 */
@@ -30,7 +33,7 @@ export interface AiMessagesProps {
 }
 
 export function AiMessages({
-  msgs, loading, err, notice, suggestions = [], suggestionStyle = "pills", onPick, renderReplyActions, className,
+  msgs, loading, err, info, renderReply, notice, suggestions = [], suggestionStyle = "pills", onPick, renderReplyActions, className,
 }: AiMessagesProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -48,11 +51,11 @@ export function AiMessages({
         <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
           <div className={cn(
             "max-w-[85%] rounded-2xl px-3 py-2 leading-relaxed",
-            m.role === "user" ? "bg-primary/20 text-foreground" : "bg-muted/40 text-foreground",
+            m.role === "user" ? "ai-message-user bg-primary/20 text-foreground" : "ai-message-assistant bg-muted/40 text-foreground",
           )}>
             {m.role === "assistant" ? (
               <div className="prose prose-sm dark:prose-invert max-w-none break-words text-foreground">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                {renderReply ? renderReply(m.content) : <ReactMarkdown remarkPlugins={[remarkGfm, cleanAutoLinks]}>{m.content}</ReactMarkdown>}
               </div>
             ) : (
               <p className="whitespace-pre-wrap break-words">{m.content}</p>
@@ -62,13 +65,10 @@ export function AiMessages({
           </div>
         </div>
       ))}
-      {loading && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> AI 正在想…
-        </div>
-      )}
+      {loading && <AiWaiting />}
+      {info && <p role="status" className="rounded-lg border border-border bg-muted/20 p-2 text-xs text-muted-foreground">{info}</p>}
       {err && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {err}
         </div>
       )}
@@ -94,13 +94,28 @@ export function AiMessages({
   );
 }
 
+/** Wall-clock waiting only: do not infer model activity or invent completion percentages. */
+export function AiWaiting() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <div className="text-xs text-muted-foreground">
+    <p className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />等待回答<span aria-live="off"> · 已等待 {seconds} 秒</span></p>
+    {seconds >= 20 && <p role="status" className="mt-1">尚未收到回答。耗时取决于模型与工具调用，可停止等待后缩小问题范围。</p>}
+  </div>;
+}
+
 /** 输入条：两个外壳共用（Enter 发送、Shift+Enter 换行） */
 export function AiComposer({
-  placeholder, disabled, onSend, highlighted = false, value, onValueChange,
+  placeholder, disabled, onSend, onStop, highlighted = false, value, onValueChange,
 }: {
   placeholder: string;
   disabled: boolean;
   onSend: (text: string) => void;
+  onStop?: () => void;
   highlighted?: boolean;
   /** 传 value 时变成受控输入；首页用它把任务模板先填进来，而不是点击即发送。 */
   value?: string;
@@ -116,7 +131,7 @@ export function AiComposer({
   };
   return (
     <div className={cn(
-      "border-t p-3",
+      "ai-composer border-t p-3",
       highlighted ? "border-warning/30 bg-warning/[0.035]" : "border-border/60",
     )}>
       <div className="flex items-end gap-2">
@@ -137,17 +152,21 @@ export function AiComposer({
           onChange={(e) => onValueChange?.(e.currentTarget.value)}
           placeholder={placeholder}
           className={cn(
-            "min-w-0 flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition-colors",
+            "ai-input min-w-0 flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition-colors",
             highlighted
               ? "border-warning/45 bg-warning/[0.075] placeholder:text-muted-foreground focus:border-warning/70 focus:bg-warning/[0.11]"
               : "border-border bg-background/55 focus:border-primary/50 focus:bg-background/75",
           )}
         />
-        <button type="button" onClick={fire} disabled={disabled}
-          className="shrink-0 rounded-lg bg-primary/15 px-3 py-2 text-primary hover:bg-primary/25 disabled:opacity-40">
+        {onStop ? <button type="button" onClick={onStop}
+          className="ai-send shrink-0 rounded-lg border border-primary/40 px-3 py-2 text-primary hover:bg-primary/15">
+          停止
+        </button> : <button type="button" onClick={fire} disabled={disabled}
+          className="ai-send shrink-0 rounded-lg bg-primary/15 px-3 py-2 text-primary hover:bg-primary/25 disabled:opacity-40">
           发送
-        </button>
+        </button>}
       </div>
+      {onStop && <p className="mt-2 text-[11px] text-muted-foreground">可先写下一问，当前回答结束后手动发送；草稿不会自动提交。</p>}
     </div>
   );
 }

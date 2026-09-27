@@ -11,14 +11,15 @@
  *  ② 取不到的数给 `null` 不给 `0`；接口类型必须如实允许 null。
  *  ③ 鉴权与密钥都不在浏览器:Bearer 由 Vite 代理注入(见 vite.config.ts)。
  */
+import { apiUrl } from "./api-base.ts";
 import {
-  ApiError, apiPath, backend, noteKV, notWired, num, round2, rows, scalar, str, throwNotWired,
+  ApiError, backend, noteKV, num, round2, rows, scalar, str, throwNotWired,
   type Envelope,
-} from "./backend";
+} from "./backend.ts";
 import {
   currencyLabel, currencyOfSymbol, marketOfSymbol, normalizeMarketSymbol, quoteQueryOfSymbol, symbolFromQuoteKey,
   type CurrencyCode, type MarketCode,
-} from "./marketSymbol";
+} from "./marketSymbol.ts";
 
 export { ApiError };
 
@@ -37,7 +38,7 @@ export const authHeaders = (): Record<string, string> => ({});
 
 export async function downloadReport(id: string, name: string): Promise<void> {
   let res: Response;
-  try { res = await fetch(apiPath(`/reports/${encodeURIComponent(id)}/download`)); }
+  try { res = await fetch(apiUrl(`/reports/${encodeURIComponent(id)}/download`)); }
   catch (e) { throw new ApiError(`连接不到编排器 API:${e instanceof Error ? e.message : String(e)}`, 0, "network"); }
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -57,6 +58,8 @@ export async function downloadReport(id: string, name: string): Promise<void> {
 }
 
 export interface Quote {
+  /** 源证据取数时刻，不是浏览器收到回包的时间，也不是逐笔成交时间。 */
+  fetched_at?: string | null;
   /**
    * 🔴 **全部可为 null**。原来这些走 `n0` 兜成 0,于是"端点没给这一项"在界面上
    *    变成「0.00 元 / 0.00 倍 / 0.00%」—— 与真实的 0 分不开,而且看着完全正常。
@@ -258,8 +261,10 @@ export interface Holding {
   pnl: number | null; pnl_pct: number | null;
 }
 export interface ClosedPosition {
+  id: string; currency: CurrencyCode;
+  note: string;
   code: string; name: string; date: string; price: number; shares: number; cost: number;
-  pnl: number; pnl_pct: number;
+  pnl: number; pnl_pct: number | null;
 }
 export interface PortfolioData {
   holdings: Holding[];
@@ -269,7 +274,8 @@ export interface PortfolioData {
     market_value: number; cost: number; pnl: number; pnl_pct: number | null;
   }[];
   closed: ClosedPosition[];
-  realized_pnl: number;
+  closed_invalid: number;
+  realized_totals: { currency: CurrencyCode; pnl: number }[];
   updated: string; last_refresh: string | null;
 }
 
@@ -294,10 +300,11 @@ export interface QaRow { company: string; question: string; answer: string | nul
 export interface IndustryRow { rank: number; name: string; change_pct: number | null; code: string; up_count: number | null; down_count: number | null }
 export interface IndustryData { top: IndustryRow[]; bottom: IndustryRow[]; total: number }
 
-// 全球市场（美股 / 港股，移植自 global-stock-data · 东财域内源）
+// 全球市场：指数复用已注册的腾讯批量快照，不把抓取时间冒充成交时间。
 export interface GlobalIndex {
   key: string; name: string; region: string;
   price: number | null; change_pct: number | null;
+  fetched_at?: string | null; evidence_id?: string | null; note?: string;
 }
 export interface GlobalQuote {
   code: string; name: string;
@@ -338,11 +345,11 @@ const descNullable = (a: number | null, b: number | null): number => (b ?? Numbe
 
 /* ---------- 行情 / 估值 ---------- */
 
-async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
+async function quoteMap(codes: string[], refresh = false): Promise<Record<string, Quote>> {
   const canonical = [...new Set(codes.map(normalizeMarketSymbol).filter((c): c is string => c !== null))];
   const queries = canonical.map(quoteQueryOfSymbol).filter((c): c is string => c !== null);
   if (!queries.length) return {};
-  const e = await env("tx_quotes_batch", { args: { codes: queries } });
+  const e = await env("tx_quotes_batch", { args: { codes: queries }, refresh });
   const out: Record<string, Quote> = {};
   for (const r of rows(e)) {
     const symbol = symbolFromQuoteKey(r.key);
@@ -350,6 +357,7 @@ async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
     const currency = symbol ? currencyOfSymbol(symbol) : null;
     if (!symbol || !market || !currency) continue;
     out[symbol] = {
+      fetched_at: r.fields.price?.fetched_at ?? null,
       name: str(r.fields.security_name),
       market,
       currency,
@@ -1130,8 +1138,7 @@ async function macroProbabilityOf(refresh = false): Promise<MacroProbability> {
  * 上游把持仓存在它自己的后端文件里;我们已经有台账(`position` 种类),
  * 再存一份就会有两个真相。⇒ 这里读台账 + 现拉行情算市值盈亏。
  *
- * ⚠️ 台账里没有的字段(已平仓记录 / 已实现盈亏)**如实给空**,不假装有。
- *    真要做平仓历史,是给台账加一个种类,不是在前端另攒一个数组。
+ * 清仓历史存 closed_position 台账，不在浏览器另建存储；币种分别汇总。
  */
 async function portfolioOf(): Promise<PortfolioData> {
   const led = await backend.ledger();
@@ -1148,7 +1155,7 @@ async function portfolioOf(): Promise<PortfolioData> {
     const q = quotes[code];
     // 🔴 拉不到行情(整只票缺席,或缺了 price 这一项)时一律 null —— 不拿成本冒充现价,
     //    也不填 0:那会把浮盈显示成"正好不赚不亏",而它其实是没取到。
-    const price = q?.price ?? null;
+    const price = q?.price != null && Number.isFinite(q.price) && q.price > 0 ? q.price : null;
     const mv = price === null ? null : price * shares;
     const pnl = price === null ? null : (price - cost) * shares;
     return {
@@ -1186,11 +1193,27 @@ async function portfolioOf(): Promise<PortfolioData> {
       pnl_pct: costSum > 0 ? round2(((mv - costSum) / costSum) * 100)! : null,
     };
   });
+  const closedRecords = led.records.closed_position ?? [];
+  const closed: ClosedPosition[] = closedRecords.flatMap(r => {
+    const code = normalizeMarketSymbol(r.symbol);
+    const price = Number(r.price), shares = Number(r.shares), cost = Number(r.cost);
+    const day = typeof r.closed_at === "string" ? Date.parse(r.closed_at) : NaN;
+    if (!code || ![r.price, r.shares, r.cost].every(v => typeof v === "number" && Number.isFinite(v))
+        || price <= 0 || shares <= 0 || !Number.isFinite((price - cost) * shares)
+        || typeof r.closed_at !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(r.closed_at)
+        || !Number.isFinite(day) || new Date(day).toISOString().slice(0, 10) !== r.closed_at) return [];
+    return [{ id: r.id, code, name: String(r.name || code), note: typeof r.note === "string" ? r.note : "", currency: currencyOfSymbol(code)!,
+      date: String(r.closed_at), price, shares, cost, pnl: round2((price - cost) * shares)!,
+      pnl_pct: cost > 0 ? round2((price - cost) / cost * 100) : null }];
+  });
+  const realized = new Map<CurrencyCode, number>();
+  for (const r of closed) realized.set(r.currency, (realized.get(r.currency) ?? 0) + r.pnl);
   return {
     holdings,
     totals,
-    closed: [],
-    realized_pnl: 0,
+    closed,
+    closed_invalid: closedRecords.length - closed.length,
+    realized_totals: [...realized].map(([currency, pnl]) => ({ currency, pnl: round2(pnl)! })),
     updated: new Date().toISOString(),
     last_refresh: null,
   };
@@ -1201,6 +1224,7 @@ async function portfolioOf(): Promise<PortfolioData> {
  * 实现必须真的合并,否则界面说的和做的两回事(而且第二次录入会静默抹掉第一次的股数)。
  */
 async function addHoldingTo(code: string, shares: number, cost: number): Promise<PortfolioData> {
+  if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(cost)) throw new ApiError("数量须为正数，成本须为有效数字", 400, "bad_input");
   const symbol = normalizeMarketSymbol(code);
   if (!symbol) throw new ApiError("请输入 A 股、港股或美股代码", 400, "bad_symbol");
   const led = await backend.ledger();
@@ -1338,8 +1362,11 @@ async function hkCashflowOf(code: string): Promise<HkCashflow> {
 
 export const api = {
   health: () => backend.health().then((h) => ({ ok: h.ok })),
+  semiTweets: (limit = 100) => backend.semiTweets(limit),
+  semiStatus: () => backend.semiStatus(),
+  dingtalkGroup: (limit = 200) => backend.dingtalkGroup(limit),
 
-  quote: (codes: string) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean)),
+  quote: (codes: string, refresh = false) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean), refresh),
   valuation: valuationOf,
   percentile: percentileOf,
   financials: financialsOf,
@@ -1352,9 +1379,10 @@ export const api = {
   dividend: dividendOf,
   fundFlow: fundFlowOf,
 
-  indices: async (): Promise<IndexQuote[]> => {
-    const e = await env("tx_quotes_batch");
-    return rows(e).map((r) => ({
+  indices: async (refresh = false): Promise<IndexQuote[]> => {
+    const codes = ["sh000001", "sh000300", "sz399001", "sz399006"];
+    const e = await env("tx_quotes_batch", { args: { codes }, refresh });
+    return rows(e).filter((r) => codes.includes(r.key)).map((r) => ({
       name: str(r.fields.security_name),
       price: num(r.fields.price),
       change_pct: num(r.fields.change_pct),
@@ -1383,7 +1411,29 @@ export const api = {
   emotion: emotionOf,
   turnoverTop: turnoverTopOf,
   macroProbability: macroProbabilityOf,
-  globalIndices: (): Promise<GlobalIndex[]> => notWired("全球指数"),
+  globalIndices: async (refresh = false): Promise<GlobalIndex[]> => {
+    const specs = [
+      ["usDJI", "道琼斯", "美股"], ["usIXIC", "纳斯达克综合", "美股"],
+      ["hkHSI", "恒生指数", "港股"], ["hkHSTECH", "恒生科技", "港股"],
+    ] as const;
+    const e = await env("tx_quotes_batch", { args: { codes: specs.map(([key]) => key) }, refresh });
+    const byKey = new Map(rows(e).map((r) => [r.key, r]));
+    const result = specs.map(([key, name, region]): GlobalIndex => {
+      const row = byKey.get(key);
+      const value = num(row?.fields.price);
+      const price = value !== null && value > 0 ? value : null;
+      return {
+        key, name, region, price,
+        change_pct: price === null ? null : num(row?.fields.change_pct),
+        fetched_at: price === null ? null : row?.fields.price?.fetched_at ?? null,
+        evidence_id: price === null ? null : row?.fields.price?.id ?? null,
+        note: price === null ? "本次未取得该指数报价" :
+          [typeof e.extra?.degraded === "string" ? e.extra.degraded : "", row?.note.includes("僵尸报价") ? "非交易时段或报价陈旧" : ""].filter(Boolean).join("；"),
+      };
+    });
+    if (!result.some((r) => r.price !== null)) throw new Error("全球指数未取得可用数据，请稍后刷新；不代表市场没有变化。");
+    return result;
+  },
   globalStock: globalStockOf,
   hkCashflow: hkCashflowOf,
   radar: () => radarOf(false),
@@ -1394,8 +1444,16 @@ export const api = {
   addHolding: addHoldingTo,
   removeHolding: removeHoldingFrom,
   refreshPortfolio: portfolioOf,
-  closePosition: (_c: string, _d: string, _p: number, _s: number, _co: number): Promise<PortfolioData> => notWired("平仓"),
-  removeClosed: (_i: number): Promise<PortfolioData> => notWired("删已平仓"),
+  closePosition: async (code: string, date: string, price: number, shares: number, cost: number, details: { name?: string; note?: string } = {}): Promise<PortfolioData> => {
+    const symbol = normalizeMarketSymbol(code);
+    if (!symbol || ![price, shares, cost].every(Number.isFinite) || price <= 0 || shares <= 0) throw new ApiError("请检查代码、数量及清仓价格", 400, "bad_input");
+    await backend.ledgerSave("closed_position", { symbol, closed_at: date, price, shares, cost, name: details.name?.trim() || "", note: details.note?.trim() || "" });
+    return portfolioOf();
+  },
+  removeClosed: async (id: string): Promise<PortfolioData> => {
+    await backend.ledgerDelete("closed_position", id);
+    return portfolioOf();
+  },
   dragonTiger: dragonTigerOf,
   lockup: lockupOf,
   blocks: blocksOf,

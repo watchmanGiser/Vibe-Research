@@ -47,6 +47,16 @@ class LoaderError(RuntimeError):
     """取数在**能不能开始回测**这一层就失败了 —— 不该被当成"这只票没数据"往下走。"""
 
 
+def price_basis(market: str) -> str:
+    """Source-specific price/accounting limits, shared by preview and runtime disclosure."""
+    source = (
+        "A 股取 baostock 前复权日线（adjustflag=2），不是当日未复权成交价；复权影响不等于分红现金到账。"
+        if market == "a_share" else
+        "港美股取 Yahoo chart 的 indicators.quote OHLC，不使用 adjclose；不可把它当作含分红的总回报序列。"
+    )
+    return source + "引擎不单独记现金分红、再投资或公司行动现金流。历史序列按本次取数版本重建，可能随公司行动或上游修订重述，并非当时可见快照；不同日期重跑可变，收益偏差方向不作保证。"
+
+
 @dataclass
 class SymbolProvenance:
     """一只票的数据来自哪儿 —— 回测结论要能顺着这条链查回去。"""
@@ -60,6 +70,7 @@ class SymbolProvenance:
     last_bar: Optional[str] = None
     halted_bars: int = 0
     note: str = ""
+    price_basis: str = ""
 
 
 def canonical_code(code: str) -> str:
@@ -191,8 +202,17 @@ def _run_fetch(endpoint: str, symbol: str, args: Dict[str, Any], out_dir: Path,
     except subprocess.TimeoutExpired as exc:
         raise LoaderError(f"{endpoint} 取 {symbol} 超时（{timeout}s）") from exc
     if p.returncode != 0:
+        # 受控取数脚本的失败原因写在 stdout 信封，stderr 可能完全为空。
+        # 只取契约中的错误字符串，不把整份原始输出（可能有 raw/配置）当诊断回传。
+        try:
+            failed = json.loads(p.stdout)
+        except json.JSONDecodeError:
+            failed = None
+        errors = failed.get("errors") if isinstance(failed, dict) else None
+        reasons = [e["error"] for e in errors if isinstance(e, dict) and isinstance(e.get("error"), str) and e["error"].strip()] if isinstance(errors, list) else []
         tail = (p.stderr or "").strip().splitlines()[-3:]
-        raise LoaderError(f"{endpoint} 取 {symbol} 退出码 {p.returncode}：{' / '.join(tail) or '无输出'}")
+        reason = " / ".join(reasons or tail) or "未返回可读错误原因"
+        raise LoaderError(f"{endpoint} 取 {symbol} 退出码 {p.returncode}：{reason}")
     try:
         return json.loads(p.stdout)
     except json.JSONDecodeError as exc:
@@ -378,6 +398,8 @@ class VibeLoader:
 
         if mkt == "a_share":
             assert_a_share_stock(code)
+            if code.endswith(".BJ") and date.fromisoformat(start_date) < date(2021, 11, 15):
+                raise LoaderError("北交所仅支持 2021-11-15 起的区间；此前精选层/新三板规则未建模")
             endpoint = "bs_kline_qfq"
             args = {"start_date": start_date, "end_date": end_date, "fields": _A_FIELDS}
             # 🔴 传**带后缀**的写法。只传六位的话端点会用自己的规则重判，
@@ -415,5 +437,6 @@ class VibeLoader:
             last_bar=str(df.index[-1].date()) if len(df) else None,
             halted_bars=dropped,
             note=("停牌 / 无成交 %d 根已剔除" % dropped) if dropped else "",
+            price_basis=price_basis(mkt),
         )
         return df, prov

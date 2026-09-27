@@ -18,7 +18,7 @@
 import { currentPlugin } from "./plugin.ts";
 import fs from "node:fs";
 import path from "node:path";
-import { redact } from "./service.ts";
+import { redact } from "./service_redact.ts";
 import { NOFOLLOW_FLAG } from "./fsutil.ts";
 
 /** 阶段显示名**由插件提供**。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */

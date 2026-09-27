@@ -5,10 +5,11 @@
  * → 合并产物 + 最终 schema 校验 + manifest。
  */
 import { spawnSync } from "node:child_process";
+import { repositoryVersion } from "./repository_version.ts";
 import fs from "node:fs";
 import path from "node:path";
 
-import { stages as packStages, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage, gateProbeLine } from "./config.ts";
+import { stages as packStages, STATUS_PRIORITY, needsTurnContext, type RunConfig, type RunStatus, type Stage, gateProbeLine } from "./config.ts";
 import { ledgerSummary, loadLedgerFromDisk, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
@@ -16,21 +17,39 @@ import { FixtureError, fixtureFreshness, readFixture, seedRunDir, verifyFixture,
 import { writeViewer } from "./viewer.ts";
 import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } from "./fsutil.ts";
 import { complianceGate, normalizeReportStatus, probeReportLine } from "./gate.ts";
-import { HOOK_CONTEXT_REL, clearStopFailed, installHooks, readHookLog, readStopFailed, summarizeHookLog, uninstallHooks, writeHookContext } from "./hooks.ts";
-import { installSkillsIsolation } from "./skills_isolation.ts";
-import { CONSTITUTION_FILENAME, ensureInstructionsRoot } from "./instructions_root.ts";
+// turn 上下文(stage/attempt)留在本文件写:它是**受控工具**判断当前阶段的依据,两个引擎都要;
+// Codex 专属的那半(指令根 / skills 隔离 / hooks 安装与汇总)已移入 engines/codex_lifecycle.ts。
+import { HOOK_CONTEXT_REL, writeHookContext } from "./hooks.ts";
+import { CONSTITUTION_FILENAME } from "./instructions_root.ts";
+import type { EngineLifecycle, EngineRuntime, LifecycleContext } from "./engine.ts";
+import { CodexEngineLifecycle, codexCapabilities } from "./engines/codex_lifecycle.ts";
+import { structuredOutputMode } from "./providers.ts";
 import { currentPlugin } from "./plugin.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
-import type { AgentRunner } from "./runner.ts";
+import type { AgentRunner } from "./agent_runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
-import { reportsForSymbol } from "./report_library.ts";
+import { reportContext, reportsForSymbol, type ReportContext } from "./report_library.ts";
+import { isResearchCancellation } from "./research_control.ts";
+import { classifyResearchFailure, researchFailure, type ResearchFailureCode } from "./research_failure.ts";
+import { LocalAgentError } from "./local_agent_runtime.ts";
 import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity, validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation, type ValidationResult, isUpstreamContractError } from "./validator.ts";
 
 export interface Deps {
+  signal?: AbortSignal;
+  checkpoint?: () => void;
+  /** Atomic boundary: once acquired, cancellation is no longer accepted. */
+  beginFinalization?: () => void;
   runner: AgentRunner;
   fetchRunner: FetchExecutor;
   verify: CalcVerifier;
-  sdkVersion: () => { version: string; binary: string | null };
+  /**
+   * 引擎生命周期。缺省 = Codex(现有唯一引擎,行为与拆分前逐字一致)。
+   * ⚠️ 直连引擎接入后,`run.ts` 必须**显式**传;缺省回落只是过渡期的向后兼容,
+   *    不要让它变成"忘了传就静默用 Codex"——那正是本产品最不该有的那类静默失败。
+   */
+  lifecycle?: EngineLifecycle;
+  /** 实际运行时信息；历史字段名保留到下一次 manifest 版本迁移。 */
+  sdkVersion: () => EngineRuntime | ({ version: string; binary: string | null } & Partial<EngineRuntime>);
 }
 
 export interface RunResult { status: RunStatus; exitCode: number; manifest: Manifest }
@@ -162,13 +181,21 @@ export async function runResearch(cfg: RunConfig, deps: Deps, onlyStages?: Stage
   } catch (e) {
     // 异常路径也要闭合领域事件(API / UI 不会永远停在 running),并把 manifest 标为 failed
     const msg = e instanceof Error ? e.message : String(e);
+    const cancelled = isResearchCancellation(e, deps.signal);
     try {
       const mp = path.join(cfg.runDir, "manifest.json");
       const m = fs.existsSync(mp) ? (JSON.parse(fs.readFileSync(mp, "utf8")) as Manifest) : null;
-      if (m) { m.status = "failed"; m.exit_code = 3; m.finished_at = nowIso(); m.final_errors = [...(m.final_errors ?? []), `exception:${msg}`]; writeManifest(cfg, m); }
+      if (m) { m.status = "failed"; m.exit_code = 3; m.finished_at = nowIso();
+        if (cancelled) m.cancelled = true;
+        // 这里只识别订阅执行器的类型化异常；取数/校验异常不是模型错误。
+        else if (e instanceof LocalAgentError) {
+          m.failure_code = classifyResearchFailure(`${e.code}: ${msg}`);
+          if (m.failure_code) m.final_errors = [...(m.final_errors ?? []), `execution:${m.failure_code}: ${researchFailure(m.failure_code)!.message}`];
+        }
+        m.final_errors = [...(m.final_errors ?? []), `exception:${msg}`]; writeManifest(cfg, m); }
     } catch { /* 尽力而为 */ }
-    deps.runner.log("orchestrator", "research.failed", { error: msg });
-    deps.runner.log("orchestrator", "research.finished", { run_id: cfg.runId, status: "failed", exit_code: 3, error: msg });
+    deps.runner.log("orchestrator", cancelled ? "research.cancelled" : "research.failed", { error: msg });
+    deps.runner.log("orchestrator", "research.finished", { run_id: cfg.runId, status: cancelled ? "cancelled" : "failed", exit_code: 3, error: msg });
     throw e;
   }
 }
@@ -177,10 +204,11 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const REPORT_STAGE = currentPlugin().reportStage as Stage;   // 报告阶段由契约给,Core 不写死阶段名(全审 r4)
   const { runner } = deps;
   const sdk = deps.sdkVersion();
+  const runtimeKind = sdk.kind ?? cfg.engine;
+  const actualModel = sdk.model ?? cfg.model ?? null;
   let calcVersion = "unknown";
   try { calcVersion = JSON.parse(sh(cfg.python, [path.join(cfg.repoRoot, cfg.calcCliRel), "list"], cfg.repoRoot)).calc_version ?? "unknown"; } catch { /* unknown */ }
-  const headOk = spawnSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: cfg.repoRoot, encoding: "utf8" }).status === 0;
-  const repoVersion = headOk ? sh("git", ["rev-parse", "HEAD"], cfg.repoRoot) : "uncommitted(无提交)";
+  const repoVersion = repositoryVersion(cfg.repoRoot);
   // 夹具已经"跑过"的阶段自动跳过;若调用方显式点名要跑其中之一,说明意图冲突,直接报错而不是默默二选一
   const seededStages = cfg.seedFrom ? readFixture(cfg.seedFrom).stages : [];
   if (onlyStages?.some((s) => seededStages.includes(s))) {
@@ -190,12 +218,32 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const stagesToRun = allStages.filter((s) => (!onlyStages || onlyStages.includes(s)) && !seededStages.includes(s));
   const partial = stagesToRun.length !== allStages.length;
   const configHash = sha256Text(JSON.stringify({ ...cfg, runDir: undefined, repoRoot: undefined })).slice(0, 16);
+  const providerOrigin = (() => {
+    if (!cfg.provider.base_url) return null;
+    try {
+      const parsed = new URL(cfg.provider.base_url);
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch { return null; }
+  })();
 
   const manifest: Manifest = {
     run_id: cfg.runId, symbol: cfg.symbol, market: cfg.market, started_at: nowIso(), finished_at: null, status: "running", stages: [],
-    codex_version: sdk.version, model: cfg.model ?? null, model_note: cfg.model ? "显式指定" : "未指定:使用 provider 的默认模型(事件流不回报实际模型名)",
-    provider: { name: cfg.provider.name, wire_api: cfg.provider.wire_api, base_url: cfg.provider.base_url, env_key: cfg.provider.env_key, auth: cfg.provider.auth, profile: cfg.providerProfile?.id ?? null, matrix_status: cfg.providerProfile?.matrix?.status ?? null },
-    engine: { codex_path: cfg.codexPath, codex_home: cfg.codexHome, binary: sdk.binary },
+    codex_version: sdk.version,
+    model: actualModel,
+    model_note: runtimeKind === "local_agent"
+      ? "本机订阅 Agent 的实际模型由已登录 CLI 决定；CLI 未向产品回报模型名"
+      : cfg.model
+      ? "显式指定"
+      : actualModel
+        ? `provider 默认模型，已由 ${runtimeKind === "direct" ? "Direct" : "Codex"} 运行时解析`
+        : "未指定:使用 provider 的默认模型(事件流不回报实际模型名)",
+    // 运行记账只需要识别 provider，不需要可能含租户路径或凭据的完整端点。
+    provider: { name: cfg.provider.name, wire_api: cfg.provider.wire_api, base_url: providerOrigin, env_key: cfg.provider.env_key, auth: cfg.provider.auth, profile: cfg.providerProfile?.id ?? null, matrix_status: cfg.providerProfile?.matrix?.status ?? null },
+    engine: {
+      codex_path: runtimeKind === "codex" ? (sdk.codexPath ?? cfg.codexPath) : null,
+      codex_home: runtimeKind === "codex" ? (sdk.codexHome ?? cfg.codexHome) : null,
+      binary: sdk.binary,
+    },
     constitution: { path: cfg.constitutionPath, sha256: sha256File(cfg.constitutionPath) },
     hooks: { enabled: cfg.hooksEnabled, installed: false, hooks_json: null, invocations: 0, stop_blocks: 0, stop_terminations: 0, pre_tool_use_blocks: 0, errors: 0, log_trust: "diagnostic_untrusted" },
     calc_version: calcVersion, repo_version: repoVersion, config_hash: configHash, raw_hashes: {}, execution_scope: [...stagesToRun], partial_run: partial,
@@ -210,34 +258,22 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const protectedFiles: Record<string, string> = {};
   const persistManifest = () => { writeManifest(cfg, manifest); protectedFiles["manifest.json"] = sha256File(path.join(cfg.runDir, "manifest.json")); };
   const protectedNow = (): ProtectedExpectation => ({ files: { ...protectedFiles }, eventsSha: runner.eventsDigest() });
-  // skills 隔离(执行层,常开):把用户主目录 ~/.agents/skills 与捆绑系统 skills 从产品 CODEX_HOME 的 catalog 里禁掉,只留产品 .agents/skills(skills_isolation.ts)
-  if (!cfg.noAgent) {
-    // 指令发现链:写 project root marker + project_root_markers 配置(分离安装时先把宪法与技能同步到数据根),
-    // 再逐条校验链路。不通过直接抛 —— 这类失效引擎全程不报错,只是宪法与技能不在提示词里(instructions_root.ts)。
-    const ins = ensureInstructionsRoot(cfg);
-    manifest.instructions_root = { root: ins.root, mode: ins.mode, marker_created: ins.markerCreated, synced_files: ins.sync ? ins.sync.copied.length + ins.sync.removed.length : 0 };
-    runner.log("orchestrator", "instructions.root", { root: ins.root, mode: ins.mode, marker_created: ins.markerCreated, config_changed: ins.configChanged, synced: ins.sync ? { copied: ins.sync.copied.length, removed: ins.sync.removed.length, unchanged: ins.sync.unchanged } : null });
-    const iso = installSkillsIsolation(cfg);  // cfg 含 repoRoot(产品 skill 不写入)与 python(写前 tomllib 校验)
-    manifest.skills_isolation = { installed: true, config_toml: iso.configTomlPath, disabled_user_skills: iso.disabledPaths.length, bundled_disabled: iso.bundledDisabled, max_context_tokens: iso.maxContextTokens, truncated: iso.truncated };
-    // 事件只记数量 + 清单哈希:events.jsonl 会经 service 层(API / MCP research_status.last_events)回给调用方,不带用户主目录下的路径清单
-    runner.log("orchestrator", "skills.isolated", { config_toml: iso.configTomlPath, disabled_user_skills: iso.disabledPaths.length, disabled_sha256: iso.disabledSha256, bundled_disabled: iso.bundledDisabled, max_context_tokens: iso.maxContextTokens, excluded_in_repo: iso.excludedInRepo, truncated: iso.truncated, toml_validated: iso.tomlValidated, changed: iso.changed });
-    // 触及 Codex 截断边界(2,000 目录 / 20,000 条目)= 清单可能不完整,出声但不中断(Codex 自己也在同一边界截断、继续运行)
-    if (iso.truncated) runner.log("orchestrator", "skills.isolation_truncated", { disabled_user_skills: iso.disabledPaths.length, note: "用户级 skill 根超过 Codex 截断边界,未枚举到的 skill 也不会被 Codex 看到;如需完整隔离请清理 ~/.agents/skills 下的大目录(如 node_modules)" });
-  }
-  // hooks v0(执行层):安装到产品 CODEX_HOME(hooks.json + trusted_hash),每个 turn 前写钩子上下文(受保护)
-  if (!cfg.hooksEnabled && !cfg.noAgent) { uninstallHooks(cfg); runner.log("orchestrator", "hooks.uninstalled", { codex_home: cfg.codexHome }); }
-  if (cfg.hooksEnabled && !cfg.noAgent) {
-    const fault = cfg.scenario?.hook_fault;
-    const inst = installHooks(cfg, process.execPath, fault === "timeout" || fault === "crash" ? fault : undefined);
-    if (fault) runner.log("orchestrator", "scenario.hook_fault", { fault });
-    manifest.hooks.installed = true;
-    manifest.hooks.hooks_json = inst.hooksJsonPath;
-    runner.log("orchestrator", "hooks.installed", { hooks_json: inst.hooksJsonPath, config_toml: inst.configTomlPath, states: inst.states });
-  }
+  // 引擎生命周期(engine.ts):Codex 要准备指令发现链 / skills 隔离 / lifecycle hooks,直连引擎一样都不碰。
+  // ⚠️ noAgent(干跑)不准备任何引擎环境 —— 原行为如此,别改成"总是 prepare"。
+  const lifecycle = deps.lifecycle ?? new CodexEngineLifecycle(cfg, codexCapabilities(cfg, structuredOutputMode(cfg.providerProfile) === "prompt" ? "prompt" : "server_schema"));
+  const lifecycleCtx: LifecycleContext = {
+    log: (stage, type, payload) => runner.log(stage, type, payload),
+    markProtected: (rel) => { protectedFiles[rel] = sha256File(path.join(cfg.runDir, rel)); },
+    unmarkProtected: (rel) => { delete protectedFiles[rel]; },
+    manifest: manifest as unknown as Record<string, unknown>,
+  };
+  manifest.engine.capabilities = lifecycle.capabilities;
+  if (!cfg.noAgent) lifecycle.prepare(lifecycleCtx);
   const hookCtx = (stage: Stage, attempt: number) => {
-    // Windows 受控 MCP 也复用这份逐 turn 上下文；它不执行 hook，只用 stage/attempt 约束工具写入范围。
-    if (!cfg.hooksEnabled && cfg.executionMode !== "controlled_mcp") return;
-    if (cfg.hooksEnabled) clearStopFailed(cfg.runDir);
+    // 受控工具(Windows 的 MCP 链路、直连引擎)都复用这份逐 turn 上下文;它们不执行 hook,
+    // 只用 stage/attempt 判当前阶段、约束写入范围。判据见 config.ts 的 needsTurnContext。
+    if (!needsTurnContext(cfg)) return;
+    lifecycle.beforeTurn(lifecycleCtx, stage, attempt);
     if (cfg.scenario?.hook_fault === "context_missing" && stage === (cfg.scenario.probe_stage ?? "profile")) {
       // 故障注入:本阶段不写钩子上下文 → 钩子应放行但出声(hooks.log error),编排器 validator 兜底
       const p = path.join(cfg.runDir, HOOK_CONTEXT_REL); if (fs.existsSync(p)) fs.rmSync(p); delete protectedFiles[HOOK_CONTEXT_REL];
@@ -250,22 +286,12 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   /** 真实跑过的 agent 轮次数:零调用只有在**有过 turn** 时才算钩子失效(--no-agent / 纯播种运行本来就没有) */
   let agentTurns = 0;
   /** turn 后汇总钩子日志(诊断,不可信);Stop 钩子留下终止标记 → 该 turn 视为失败(缺产物不许正常收工) */
-  const hookSummary = (stage: Stage, attempt: number): string | null => {
-    if (!cfg.hooksEnabled) return null;
-    const sum = summarizeHookLog(readHookLog(cfg.runDir));
-    Object.assign(manifest.hooks, sum);
-    runner.log(stage, "hooks.summary", { attempt, ...sum });
-    const marker = readStopFailed(cfg.runDir);
-    if (marker && marker.stage === stage && marker.attempt === attempt) {
-      runner.log(stage, "hooks.stop_terminated", { attempt, blocks: marker.blocks, problems: marker.problems.slice(0, 6) });
-      return `Stop 钩子终止本轮(拦截 ${marker.blocks} 次后仍不合格):${marker.problems.slice(0, 3).join("; ")}`;
-    }
-    return null;
-  };
+  /** turn 后的引擎收尾:返回非 null = 该 turn 判失败(Codex 下即 Stop 钩子终止;详见 engines/codex_lifecycle.ts) */
+  const hookSummary = (stage: Stage, attempt: number): string | null => lifecycle.afterTurn(lifecycleCtx, stage, attempt);
   // M2 知识层召回:只在未由 scenario 注入且开启时;注入文本进全阶段提示词,由 knowledge_conflicts 裁决
   if (shouldRecall(cfg)) {
     const k = recallKnowledge(cfg);
-    const reports = reportsForSymbol(cfg.dataRoot, cfg.symbol, { maxChars: 10_000, companyName: cfg.companyName });
+    const reports = researchReportContext(cfg);
     manifest.user_reports = reports?.hits.map((x) => ({ id: x.id, name: x.name, page: x.page })) ?? [];
     if (k || reports) {
       const reportText = reports ? `\n\n## 用户资料库命中（上传时间不是资料期）\n${reports.text}` : "";
@@ -279,7 +305,18 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     } else { manifest.knowledge_recalled = null; runner.log("orchestrator", "knowledge.none", { dir: path.join(cfg.dataRoot, "knowledge") }); }
   } else manifest.knowledge_recalled = null;
   persistManifest();
-  runner.log("orchestrator", "run.start", { config: { ...cfg, endpoints: Object.keys(cfg.endpoints).length }, codex_version: sdk.version, codex_binary: sdk.binary, calc_version: calcVersion, repo_version: repoVersion, stages: stagesToRun });
+  const loggedConfig: Record<string, unknown> = { ...cfg, endpoints: Object.keys(cfg.endpoints).length };
+  delete loggedConfig.taskObjective;
+  delete loggedConfig.reportIds;
+  delete loggedConfig.reportRevisions;
+  loggedConfig.provider = { ...cfg.provider, base_url: providerOrigin };
+  loggedConfig.providerProfile = cfg.providerProfile ? {
+    id: cfg.providerProfile.id,
+    wire_api: cfg.providerProfile.wire_api,
+    env_key: cfg.providerProfile.env_key,
+    matrix_status: cfg.providerProfile.matrix?.status ?? null,
+  } : null;
+  runner.log("orchestrator", "run.start", { config: loggedConfig, codex_version: sdk.version, codex_binary: sdk.binary, calc_version: calcVersion, repo_version: repoVersion, stages: stagesToRun });
   // 领域事件(v2.1 §5 ④,供 API / UI 消费):research.started / stage.completed / gate.failed / report.ready / research.finished
   runner.log("orchestrator", "research.started", { run_id: cfg.runId, symbol: cfg.symbol, market: cfg.market, stages: stagesToRun, run_dir: cfg.runDir });
 
@@ -308,7 +345,10 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   writeJson(path.join(cfg.runDir, PLAN_REL), planFileOf(cfg.endpointScope, cfg.registryVersion, cfg.stagePlan, cfg.criticalScripts, cfg.endpoints));
   runner.log("orchestrator", "plan.written", { scope: cfg.endpointScope, registry_version: cfg.registryVersion, stages: Object.fromEntries(Object.entries(cfg.stagePlan).map(([k, v]) => [k, { required: v.required.length, optional: v.optional.length }])) });
 
+  let stoppedFailure: ResearchFailureCode | null = null;
   for (const stage of stagesToRun) {
+    deps.checkpoint?.();
+    deps.signal?.throwIfAborted();
     const scripts = cfg.stagePlan[stage];
     let toFetch = [...scripts.required, ...scripts.optional];
     // 取数前的垂类门控:Core 无条件调用一次,由插件决定实际跑哪些端点(原本这段直接 import 金融模块)。
@@ -318,7 +358,9 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
       record: (key, value) => { (manifest as unknown as Record<string, unknown>)[key] = value; },
       log: (type, payload) => runner.log(stage, type, payload),
     }) ?? toFetch;
-    deps.fetchRunner(cfg, stage, toFetch, (t, p) => runner.log(stage, t, p), ledger);
+    await deps.fetchRunner(cfg, stage, toFetch, (t, p) => runner.log(stage, t, p), ledger, deps.signal);
+    deps.checkpoint?.();
+    deps.signal?.throwIfAborted();
     // 取数后的垂类后处理:Core **无条件调用一次**,由插件自己决定管不管这个阶段、做什么。
     // 🔴 这里原本写死 `if (stage === "risk" || stage === "report")` 并直接 import 金融模块(全审 r4-P1)。
     currentPlugin().afterFetch?.({
@@ -335,20 +377,31 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     let res: ValidationResult = { ok: false, errors: ["未运行"], warnings: [] };
     let lastErrors: string[] | undefined;
     let turnFailed = false;
+    let executionFailure: ResearchFailureCode | null = null;
     const maxAttempts = cfg.noAgent ? 1 : cfg.maxRetries + 1;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      deps.checkpoint?.();
+      deps.signal?.throwIfAborted();
       rec.attempts = attempt + 1;
       turnFailed = false;
+      executionFailure = null;
       if (!cfg.noAgent) {
         const prompt = currentPlugin().buildStagePrompt(stage, cfg, { attempt, validatorErrors: lastErrors, stageStatusSoFar: statusSoFar, ledger });
         console.error(`[orchestrator] stage=${stage} attempt=${attempt + 1}/${maxAttempts}`);
         hookCtx(stage, attempt + 1);
         agentTurns += 1;
-        const turn = await runner.runTurn(stage, attempt + 1, prompt, turnReplySchema);
+        const turn = await runner.runTurn(stage, attempt + 1, prompt, turnReplySchema, deps.signal);
+        deps.checkpoint?.();
+        deps.signal?.throwIfAborted();
         const stopFail = hookSummary(stage, attempt + 1);
         trace.commands.push(...turn.commands.map((c) => c.command));
         trace.fileChanges.push(...turn.fileChanges);
-        if (turn.failed) { turnFailed = true; rec.errors.push(`turn 失败:${turn.failed}`); }
+        if (turn.failed) {
+          turnFailed = true; rec.errors.push(`turn 失败:${turn.failed}`);
+          const code = classifyResearchFailure(turn.failed);
+          executionFailure = code;
+          if (code && (!researchFailure(code)!.retryable || attempt + 1 === maxAttempts)) stoppedFailure = code;
+        }
         if (stopFail) { turnFailed = true; rec.errors.push(stopFail); }
       }
       const run = loadRun(cfg.runDir, ledger, planOf);
@@ -362,6 +415,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
         if (!rv.ok) res = { ok: false, errors: rv.errors, warnings: res.warnings };
       }
       runner.log(stage, "validator", { attempt: attempt + 1, ok: res.ok, errors: res.errors, warnings: res.warnings });
+      if (stoppedFailure) break;
       if (res.ok && !turnFailed) break; // turn 本身失败(含 Stop 钩子终止)即使产物恰好过校验也要补跑
       lastErrors = res.errors;
       console.error(`[orchestrator] stage=${stage} validator 未通过(${res.errors.length} 条)\n${summarizeErrorsForAgent(res, 6)}`);
@@ -370,6 +424,8 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
       //    说成 agent 没做好。⇒ 立刻停下并如实归因。
       const upstream = res.errors.filter(isUpstreamContractError);
       if (upstream.length) {
+        // 上游契约已不可由模型修复；若同时有执行错误，整次停止而非继续后续阶段。
+        stoppedFailure = executionFailure;
         console.error(`[orchestrator] stage=${stage} 其中 ${upstream.length} 条是**取数层**契约违约(agent 无法修复),不再补跑:\n  ${upstream.slice(0, 3).join("\n  ")}`);
         runner.log(stage, "validator.upstream_contract", { attempt: attempt + 1, errors: upstream });
         break;
@@ -383,8 +439,10 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     manifest.stages = stageRecords;
     manifest.fetch_ledger = ledgerSummary(ledger);
     manifest.thread_id = runner.threadId;
+    if (stoppedFailure) manifest.failure_code = stoppedFailure;
     persistManifest();
     runner.log(stage, "stage.completed", { stage, status: rec.status, attempts: rec.attempts, validator_ok: rec.validator_ok, errors: rec.errors.length });
+    if (stoppedFailure) { runner.log(stage, "research.execution_stopped", { code: stoppedFailure }); break; }
   }
 
   // 合规 gate:报告阶段 validator 已含 gate;这里是独立的最终一道闸 + 重写循环(重写后全量复验 report 阶段)
@@ -396,19 +454,33 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   }
   let gate = complianceGate(fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "");
   const reportRec = stageRecords.find((s) => s.stage === REPORT_STAGE);
-  let rewriteTurnFailed = false;
+  // 未发生成功重写时，不能抹掉成稿 turn/Stop 的既有失败。
+  let rewriteTurnFailed = !!stoppedFailure || reportRec?.status === "failed";
+  let rewriteFailure: ResearchFailureCode | null = null;
   if (!gate.ok) runner.log(REPORT_STAGE, "gate.failed", { hits: gate.hits, will_rewrite: cfg.gateRetries > 0 && !cfg.noAgent && !!reportRec });
-  for (let i = 0; i < cfg.gateRetries && !gate.ok && !cfg.noAgent && reportRec; i++) {
+  for (let i = 0; i < cfg.gateRetries && !stoppedFailure && !gate.ok && !cfg.noAgent && reportRec; i++) {
     runner.log(REPORT_STAGE, "gate.rewrite", { attempt: i + 1, hits: gate.hits });
     hookCtx(REPORT_STAGE, 100 + i);
     agentTurns += 1;
-    const turn = await runner.runTurn(REPORT_STAGE, 100 + i, currentPlugin().buildRewritePrompt(cfg, gate.hits), turnReplySchema);
+    deps.checkpoint?.();
+    deps.signal?.throwIfAborted();
+    const turn = await runner.runTurn(REPORT_STAGE, 100 + i, currentPlugin().buildRewritePrompt(cfg, gate.hits), turnReplySchema, deps.signal);
+    deps.checkpoint?.();
+    deps.signal?.throwIfAborted();
     const stopFail = hookSummary(REPORT_STAGE, 100 + i);
     trace.commands.push(...turn.commands.map((c) => c.command));
     trace.fileChanges.push(...turn.fileChanges);
     rewriteTurnFailed = !!turn.failed || !!stopFail;
+    rewriteFailure = turn.failed ? classifyResearchFailure(turn.failed) : null;
     if (stopFail) reportRec.errors.push(stopFail);
-    if (turn.failed) reportRec.errors.push(`gate 重写 turn 失败:${turn.failed}`);
+    if (turn.failed) {
+      reportRec.errors.push(`gate 重写 turn 失败:${turn.failed}`);
+      const code = classifyResearchFailure(turn.failed);
+      if (code && (!researchFailure(code)!.retryable || i + 1 === cfg.gateRetries)) {
+        stoppedFailure = code; manifest.failure_code = code;
+        runner.log(REPORT_STAGE, "research.execution_stopped", { code });
+      }
+    }
     const run = loadRun(cfg.runDir, ledger, planOf);
     let rv = validateStage(REPORT_STAGE, run);
     const behaviour = checkAgentTrace(trace, cfg);
@@ -423,9 +495,13 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     gate = complianceGate(fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "");
     if (!gate.ok) runner.log(REPORT_STAGE, "gate.failed", { hits: gate.hits, after_rewrite: i + 1 });
   }
+  // 重写过程中正文可能已修好，但 turn 随后超时；即使 gate 提前结束也保留执行失败原因。
+  if (rewriteTurnFailed && rewriteFailure) { stoppedFailure = rewriteFailure; manifest.failure_code = rewriteFailure; }
   if (reportRec) reportRec.status = deriveStageStatus(REPORT_STAGE, reportRec.validator_ok && gate.ok, rewriteTurnFailed, loadRun(cfg.runDir, ledger, planOf));
 
   // 最终状态(确定性)
+  deps.checkpoint?.();
+  deps.signal?.throwIfAborted();
   const finalRun = loadRun(cfg.runDir, ledger, planOf);
   const qd = deriveQuoteDecision(finalRun);
   const reportInScope = stagesToRun.includes(REPORT_STAGE);
@@ -437,6 +513,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
 
   // 报告首行状态归一(不动正文),并核对一致性;最终校验失败 → 进入状态推导(产物不齐 / 校验不过不得宣称完成)
   const finalErrors: string[] = [];
+  if (stoppedFailure) finalErrors.push(`execution:${stoppedFailure}: ${researchFailure(stoppedFailure)!.message}`);
   if (finalRun.report) {
     const n = normalizeReportStatus(finalRun.report, status);
     if (n.changed) { atomicWrite(reportPath, n.text); runner.log(REPORT_STAGE, "report.status_normalized", { to: status }); }
@@ -477,6 +554,11 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     const n2 = normalizeReportStatus(fs.readFileSync(reportPath, "utf8"), status);
     if (n2.changed) atomicWrite(reportPath, n2.text);
   }
+  // No model/fetch work remains. Atomically close cancellation before any
+  // archival side effect; a competing cancellation wins or is explicitly late.
+  deps.beginFinalization?.();
+  deps.checkpoint?.();
+  deps.signal?.throwIfAborted();
   // M2:查看器 / 附录(运行目录内,非受保护文件)+ 知识层归档(.local/knowledge);都在最终状态定下之后,失败只记事件不改状态
   manifest.viewer = null;
   manifest.knowledge_archived = null;
@@ -509,4 +591,16 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   runner.log("orchestrator", "run.done", { status, exit_code: manifest.exit_code, evidence: merged.evidence.length, calculations: merged.calcs.length, conflicts: manifest.evidence_conflicts.length });
   console.error(`[orchestrator] done status=${status} exit=${manifest.exit_code} evidence=${merged.evidence.length} calcs=${merged.calcs.length} conflicts=${manifest.evidence_conflicts.length}`);
   return { status, exitCode: manifest.exit_code, manifest };
+}
+
+/** Deep 任务圈选了资料时只使用这份白名单；旧研究入口仍沿用按对象召回。 */
+export function researchReportContext(cfg: Pick<RunConfig, "dataRoot" | "symbol" | "companyName" | "taskObjective" | "reportIds" | "reportRevisions">): ReportContext | null {
+  return cfg.reportIds?.length
+    ? reportContext(cfg.dataRoot, cfg.taskObjective ?? cfg.symbol, {
+        // Deep 最多允许 16 份；单份检索片段上限约 1,780 字，40K 足以让每份至少进入一个片段。
+        // 不能沿用普通对话的 10K，否则明确圈选的后几份会被静默截掉。
+        limit: Math.min(cfg.reportIds.length, 16), maxChars: 40_000, reportIds: cfg.reportIds, mustInclude: true,
+        expectedRevisions: cfg.reportRevisions,
+      })
+    : reportsForSymbol(cfg.dataRoot, cfg.symbol, { maxChars: 10_000, companyName: cfg.companyName });
 }

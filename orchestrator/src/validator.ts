@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { currentPlugin } from "./plugin.ts";
 import { HOME_PREFIXES, gateRegexps, gateStagePatterns, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
@@ -13,7 +14,7 @@ import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
 import { complianceGate, missingSections, referencedIds, reportStatusToken } from "./gate.ts";
 import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts";
-import { checkNumberFidelity, quotedHistory } from "./number_fidelity.ts";
+import { checkNumberFidelity, quotedHistory, summarizeFidelityViolations } from "./number_fidelity.ts";
 import { resultProjection, type ResultProjectionItem } from "./calc_projection.ts";
 import { reportCitationErrors, type ReportSourceRef } from "./report_library.ts";
 
@@ -320,7 +321,13 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   for (const c of run.calcs) {
     if (!c.record) { errors.push(`${path.basename(c.file)} 不是合法 JSON`); continue; }
     const ce = validateCalcRecord(c.record);
-    if (ce.length) errors.push(`${path.basename(c.file)} 不符 calculation 契约:${ce.slice(0, 3).join("; ")}`);
+    // 🔴 不合契约就**到此为止**,不能继续拿它当计算记录用。
+    //    少了这个 continue,下面 `c.record.output.status` 会对畸形记录抛 TypeError,
+    //    于是整次运行崩在 validator 里、只留一句 "Cannot read properties of undefined" ——
+    //    而真正的问题(某个 calc 文件根本不是计算记录)一个字都没说。
+    //    2026-09-04 真踩:模型把 `calculate` 的 function 传成 "list",cli 打印的是函数清单
+    //    (合法 JSON、退出码 0),文件照写,validator 一读就崩。与用哪个引擎无关。
+    if (ce.length) { errors.push(`${path.basename(c.file)} 不符 calculation 契约:${ce.slice(0, 3).join("; ")}`); continue; }
     for (const r of c.record.inputs_refs ?? []) {
       if (r.ref_type === "evidence" && !run.evidenceIds.has(r.ref_id)) errors.push(`${path.basename(c.file)} 引用了不存在的 evidence ${r.ref_id}`);
       if (r.ref_type === "calculation" && !run.calcIds.has(r.ref_id)) errors.push(`${path.basename(c.file)} 引用了不存在的 calculation ${r.ref_id}`);
@@ -410,6 +417,8 @@ export interface Slot {
   coverRoles?: Role[];
   /** 实参 == 所引用该 field(可限定财年)证据的 value;unitArg == 证据 unit */
   bind?: { arg: string; field: string; unitArg?: string; fy?: Fy }[];
+  /** 插件声明序列列名/过滤/日期列;Core 绑定文件、期间与行数,复算再验证解析记录。 */
+  bindSeries?: { arg: string; field: string; column: string; where: Record<string, string>; dateColumn: string }[];
   /** 实参 == 所引用上游计算的 output.value;unitArg == output.unit */
   bindUpstream?: { arg: string; fn: string; role?: Role; unitArg?: string }[];
   /** 这些 field 的引用证据必须同一期间(可要求 == 某财年) */
@@ -492,6 +501,21 @@ export function validateCalcSlots(stage: Stage, run: RunView, so: StageOutput): 
         if (!hit) errors.push(`${tag}实参 ${b.arg}=${JSON.stringify(val)} 与所引用 ${b.field}${want ? "@" + want : ""} 证据的值 ${matched.map((e) => JSON.stringify(e.value)).join("/")} 不一致(输入没选对或手改)`);
         else if (b.unitArg && inputs[b.unitArg] !== hit.unit) errors.push(`${tag}单位参数 ${b.unitArg}=${String(inputs[b.unitArg])} 与证据单位 ${hit.unit} 不一致`);
       }
+      for (const b of slot.bindSeries ?? []) {
+        const supplied = inputs[b.arg];
+        const rec = (r.inputs_resolved as Record<string, Record<string, unknown>> | undefined)?.[b.arg];
+        const matched = evs.filter(e => e.field === b.field && typeof e.raw_ref === "string" && e.raw_ref.startsWith("raw/"));
+        const hit = matched.some(e => {
+          const where = { ...b.where }; // 插件深冻结使用无原型字典;JSON 输入按普通对象比较
+          const spec = { raw_ref: e.raw_ref, column: b.column, where, date_column: b.dateColumn };
+          return isDeepStrictEqual(supplied, { history_csv: spec }) &&
+            rec?.raw_ref === e.raw_ref && rec?.column === b.column &&
+            isDeepStrictEqual(rec?.where, where) && rec?.date_column === b.dateColumn &&
+            rec?.period === e.period && typeof e.value === "number" && e.value > 0 &&
+            rec?.rows_used === e.value;
+        });
+        if (!hit) errors.push(`${tag}序列实参 ${b.arg} 必须绑定所引用 ${b.field} 的文件、列 ${b.column}、过滤条件、日期列、期间和行数;禁止内联替代`);
+      }
       for (const b of slot.bindUpstream ?? []) {
         const up = ups.find((c) => c.function === b.fn && (!b.role || roleOf(c, run) === b.role));
         if (!up) continue; // 已由 upstream 规则报错
@@ -536,7 +560,8 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   //    `applicable=false` = 本次没有带 display 的 calc(旧运行 / 纯取数运行)→ 不适用,不判失败。
   const symbolOf = () => { for (const e of run.evidence.values()) { const s = (e as { symbol?: unknown }).symbol; if (typeof s === "string" && s && s !== "MARKET") return s; } return undefined; };
   const fid = checkNumberFidelity(run.report, run.evidence as never, run.calcById as never, symbolOf(),
-                                  quotedHistory((st) => run.stage(st as never) as never));
+                                  quotedHistory((st) => run.stage(st as never) as never),
+                                  currentPlugin().lexicon, currentPlugin().fidelityExcludedSections);
   if (fid.missingDisplay) {
     // 引用了 calc 结果却一个带 display 的都没有 = calc 侧缺陷。静默跳过等于把这条防线关掉。
     errors.push("report.md 引用的 calc 里有**成功结果没写 display**(该版本本应写),数字忠实度对这些结果无法校验");
@@ -544,11 +569,11 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   // 纯 evidence 行的违规**不受 applicable 门控**:它与 display 无关,旧运行同样该报
   if (fid.evidenceViolations?.length) {
     errors.push(`report.md 有 ${fid.evidenceViolations.length} 个数字与同行引用的 evidence 对不上(引了 id 却写了别的数)`
-      + `:${fid.evidenceViolations.slice(0, 3).join(" | ")}`);
+      + `:${summarizeFidelityViolations(fid.evidenceViolationDetails)}`);
   }
   if (fid.applicable && fid.violations.length) {
     errors.push(`report.md 有 ${fid.violations.length}/${fid.total} 个数字与同行引用的证据 / 计算对不上(引了 id 却写了别的数)`
-      + `:${fid.violations.slice(0, 3).join(" | ")}`);
+      + `:${summarizeFidelityViolations(fid.violationDetails)}`);
   }
   const refs = referencedIds(run.report);
   for (const id of refs.evidence) if (!run.evidenceIds.has(id)) errors.push(`report.md 引用了不存在的 evidence ${id}`);

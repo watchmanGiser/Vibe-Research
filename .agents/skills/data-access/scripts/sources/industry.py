@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import statistics
 import time
@@ -174,47 +173,6 @@ FARM_SOURCE = ("500.farm 对 Vast.ai 可租挂单的逐日中位统计(按机型
 SPOT_SOURCE = "现货 = 走势曲线的最新采样点(与曲线同源同算法,两处数字严格一致);另附当前市场挂单卡数做规模读数"
 
 
-def _gpu_history_file(gpu: str) -> Optional[str]:
-    root = os.environ.get("VRA_GPU_HISTORY_DIR", "").strip()
-    if not root:
-        return None
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", gpu)
-    return os.path.join(root, f"{safe}.json")
-
-
-def _read_saved_points(gpu: str) -> list[list[int | float]]:
-    file = _gpu_history_file(gpu)
-    if not file:
-        return []
-    try:
-        with open(file, encoding="utf-8") as f:
-            rows = json.load(f)
-        if not isinstance(rows, list):
-            return []
-        return [[int(x[0]), round(float(x[1]), 2)] for x in rows if isinstance(x, list) and len(x) == 2]
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return []
-
-
-def _save_points(gpu: str, points: list[list[int | float]]) -> None:
-    file = _gpu_history_file(gpu)
-    if not file:
-        return
-    os.makedirs(os.path.dirname(file), mode=0o700, exist_ok=True)
-    tmp = f"{file}.tmp-{os.getpid()}"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(points, f, ensure_ascii=False, separators=(",", ":"))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, file)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-
 def _farm_history(gpu: str) -> dict:
     """单卡近一年逐日中位价。points = [[unix**秒**, 美元价], ...] 升序。
 
@@ -223,10 +181,8 @@ def _farm_history(gpu: str) -> dict:
     ⚠️ 一张卡失败不拖垮整个端点：收敛成 error 项，由 mapper 决定降级到什么程度。
     """
     now = int(time.time())
-    saved = _read_saved_points(gpu)
-    start = saved[-1][0] + 86400 if saved else now - FARM_DAYS * 86400
     url = FARM_BASE + "/query_range?" + urllib.parse.urlencode(
-        {"query": FARM_QUERY % gpu, "start": start, "end": now, "step": 86400})
+        {"query": FARM_QUERY % gpu, "start": now - FARM_DAYS * 86400, "end": now, "step": 86400})
     try:
         r = http_get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60, ext="json")
     except Exception as e:  # noqa: BLE001
@@ -240,9 +196,6 @@ def _farm_history(gpu: str) -> dict:
         return {"gpu": gpu, "error": f"500.farm 响应不是 JSON:{type(e).__name__}", "raw_ref": raw}
     result = ((body or {}).get("data") or {}).get("result") or []
     if not result:
-        if saved:
-            return {"gpu": gpu, "n_points": len(saved), "points": saved, "latest": saved[-1][1],
-                    "dropped": 0, "raw_ref": raw, "incremental": True, "no_new_points": True}
         # 统计站没有这个型号的序列 = 市场状态 / 型号名变更，不是故障
         return {"gpu": gpu, "unavailable": True, "raw_ref": raw,
                 "note": "统计站暂无该型号的历史序列(市场状态或型号名变更)"}
@@ -262,10 +215,6 @@ def _farm_history(gpu: str) -> dict:
         points.append([int(ts), round(price, 2)])
     if not points:
         return {"gpu": gpu, "error": f"返回了序列但无一个点可解析(上游契约可能已变;丢弃 {bad} 个)", "raw_ref": raw}
-    merged = {int(ts): float(price) for ts, price in saved}
-    merged.update({int(ts): float(price) for ts, price in points})
-    points = [[ts, round(merged[ts], 2)] for ts in sorted(merged)]
-    _save_points(gpu, points)
     return {"gpu": gpu, "n_points": len(points), "points": points, "latest": points[-1][1],
             "dropped": bad, "raw_ref": raw}
 

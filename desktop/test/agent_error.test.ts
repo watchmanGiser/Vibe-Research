@@ -3,28 +3,28 @@ import test from "node:test";
 
 import { ApiError, backend, friendlyAgentError } from "../src/verticals/finance/lib/backend.ts";
 
-test("辩论推进携带当前浏览器模型配置", async () => {
+test("未接入 AI 仍可调用确定性工具，并传递取消信号", async () => {
   const oldFetch = globalThis.fetch;
-  const llm = {
-    provider: "openai-compatible",
-    baseURL: "https://example.invalid/v1",
-    apiKey: "test-only-key",
-    model: "test-model",
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => null } });
+  const signal = new AbortController().signal;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls++;
+    assert.equal(String(input), "/api/tool/calc");
+    assert.equal(init?.signal, signal);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.executionMode, "direct");
+    assert.equal(body.llm, undefined);
+    return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
   };
-  let request: { url: string; init?: RequestInit } | undefined;
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    request = { url: String(input), init };
-    return new Response(JSON.stringify({ id: "d1", stages: [], done: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof fetch;
   try {
-    await backend.debateAdvance("d1", undefined, llm);
-    assert.equal(request?.url, "/api/debate/d1/advance");
-    assert.deepEqual(JSON.parse(String(request?.init?.body)), { llm });
+    assert.deepEqual(await backend.runTool("calc", { function: "peg" }, signal), { ok: true });
+    assert.equal(calls, 1);
   } finally {
     globalThis.fetch = oldFetch;
+    if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
 
@@ -41,11 +41,15 @@ test("Agent 认证失败只显示可行动的中文提示，不暴露重连地�
 
 test("选中的本地 Agent 不可用时先拦住，不再发起对话请求", async () => {
   const oldFetch = globalThis.fetch;
+  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => JSON.stringify({
+    schemaVersion: 2, modePreferenceVersion: 1, executionMode: "agent", source: { provider: "cli-codex" },
+  }) } });
   const paths: string[] = [];
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
     paths.push(url);
-    if (url === "/api/local-agents") {
+    if (url === "/api/local-agents?provider=cli-codex") {
       return new Response(JSON.stringify([{
         provider: "cli-codex", name: "Codex", installed: true, authenticated: false,
         available: false, version: "0.149.0", status: "not_authenticated", detail: "尚未登录",
@@ -59,10 +63,18 @@ test("选中的本地 Agent 不可用时先拦住，不再发起对话请求", a
       (e: unknown) => e instanceof ApiError && e.code === "agent_not_ready"
         && e.message.includes("接入 AI"),
     );
-    assert.deepEqual(paths, ["/api/local-agents"], "不可用时只做状态探针，不调用 /chat");
+    assert.deepEqual(paths, ["/api/local-agents?provider=cli-codex"], "只检测所选来源，不等待其他来源，也不调用 /chat");
   } finally {
     globalThis.fetch = oldFetch;
+    if (oldStorage) Object.defineProperty(globalThis, "localStorage", oldStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
+});
+
+test("检测失败与未安装不再被误报成登录失效", () => {
+  assert.match(friendlyAgentError(new ApiError("opaque secret diagnostic", 409, "agent_probe_failed")), /检测未完成/);
+  assert.doesNotMatch(friendlyAgentError(new ApiError("opaque secret diagnostic", 409, "agent_probe_failed")), /secret|登录已失效/);
+  assert.match(friendlyAgentError(new ApiError("当前选择的 Claude 尚未安装。请先到「接入 AI」完成连接。", 409, "agent_not_installed")), /尚未安装/);
 });
 
 test("Agent 端点返回非 JSON 错误页时也不回显底层正文", async () => {
@@ -75,7 +87,7 @@ test("Agent 端点返回非 JSON 错误页时也不回显底层正文", async ()
     await assert.rejects(
       () => backend.chat("复盘今天", "daily-review", undefined, { provider: "deepseek", apiKey: "k" }),
       (e: unknown) => e instanceof ApiError
-        && e.message === "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
+        && e.message === "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
         && !/wss?:\/\/|cf-ray|Reconnecting|502 upstream/i.test(e.message),
     );
   } finally {
@@ -110,7 +122,8 @@ test("Agent 未知 JSON 错误也默认收口，不把内部诊断原文交给�
     await assert.rejects(
       () => backend.chat("复盘今天", "daily-review", undefined, { provider: "deepseek", apiKey: "k" }),
       (e: unknown) => e instanceof ApiError
-        && e.message === "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
+        && e.code === "turn_failed"
+        && e.message === "当前 AI 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。"
         && !/opaque|diagnostic|secret-value/i.test(e.message),
     );
   } finally {
@@ -141,4 +154,10 @@ test("不支持的 cli provider 交给后端判定，不误报成未登录", asy
   } finally {
     globalThis.fetch = oldFetch;
   }
+});
+
+test("连接探针「有响应但没回填令牌」是可行动错误，原样显示而不是当成连接失败（#40）", () => {
+  const raw = new ApiError("模型已响应，但没有按探针格式回填本次令牌。请确认所选模型能遵循结构化输出要求后重试", 400, "probe_bad_output");
+  assert.equal(friendlyAgentError(raw), raw.message);
+  assert.doesNotMatch(friendlyAgentError(raw), /连接成功|重新连接/);
 });

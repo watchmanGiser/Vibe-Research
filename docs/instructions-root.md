@@ -142,15 +142,15 @@ Not inside a trusted directory and --skip-git-repo-check was not specified.
 3. **`allowedPathPrefixes` 加上 `dataRoot`**(`config.ts`)。⚠️ 这条**临时目录测不出来**:
    `/var/folders` 恰好在默认白名单里,得把数据根放到 `$HOME` 下才暴露。
 
-## ⚠️ 产品约束:根路径不能有空格
+## Shell 模式约束与 M37 含空格路径支持
 
 执行层的命令扫描器按空白切 token 找绝对路径,路径里带空格会被切断 ——
 `~/Library/Application Support/X/runs/…` 只剩 `/Users/…/Library/Application`,与允许前缀永远对不上,
 于是 agent **每一条引用运行目录绝对路径的命令都会被拒**(实测)。
 
-⇒ `makeConfig` 在**配置期就拒绝**含空白的产品根 / 数据根,并给出替代建议。
-⇒ **macOS 上不能装到 `~/Library/Application Support`**,用 `~/.vibe-research` 这类无空格路径
-(引擎自己的 `~/.codex` 就是这个风格)。
+⇒ 显式 `shell_hooks` 仍在配置期拒绝含空白的产品根 / 数据根。
+⇒ M37 起，未显式指定执行层时，含空白路径自动使用已有 `controlled_mcp`，由受控工具用独立 argv 取数、计算、读写本阶段产物，不经过 Shell 扫描器。Windows 默认也使用该模式；无空白的其他平台默认不变。
+⇒ Mac 安装版默认数据根仍为 `~/.vibe-research-desktop`；此调整不迁移数据、不更换登录态、不改变用户 Agent 开关。
 ⇒ 之所以不去改扫描器的分词:那套规则是用 1,142 条真实命令语料回归过的,动它的风险比这条限制大。
 
 ## 已知残留

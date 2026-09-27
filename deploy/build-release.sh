@@ -4,19 +4,23 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output="${1:?用法: build-release.sh <输出 tar.gz> <40位 commit sha>}"
 commit_sha="${2:?用法: build-release.sh <输出 tar.gz> <40位 commit sha>}"
+upstream_commit="${VIBE_UPSTREAM_COMMIT:-}"
 
 [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "commit sha 格式错误" >&2; exit 2; }
+[[ -z "$upstream_commit" || "$upstream_commit" =~ ^[0-9a-f]{40}$ ]] || { echo "上游 commit sha 格式错误" >&2; exit 2; }
 [[ -f "$repo_root/desktop/dist/index.html" ]] || { echo "请先构建 desktop/dist" >&2; exit 2; }
+node "$repo_root/scripts/check-guangzhou-customizations.mjs"
 
 stage="$(mktemp -d)"
 trap 'rm -rf -- "$stage"' EXIT
 
 rsync -a \
-  --exclude '/.git/' \
+  --exclude '/.git' \
   --exclude '/.github/' \
   --exclude '/.local/' \
   --exclude '/.venv/' \
   --exclude '/.playwright-cli/' \
+  --exclude '/output/' \
   --exclude '/desktop/node_modules/' \
   --exclude '/orchestrator/node_modules/' \
   --exclude '/backend/' \
@@ -29,7 +33,11 @@ npm ci --omit=dev --prefix "$stage/app/orchestrator"
 # 不使用这些开发期入口。远端为防止解包路径逃逸拒绝所有链接，因此归档前必须移除。
 rm -rf -- "$stage/app/orchestrator/node_modules/.bin"
 install -m 0644 "$repo_root/deploy/refresh-gpu.mjs" "$stage/app/scripts/refresh-gpu.mjs"
-printf '{"commit":"%s","built_at":"%s"}\n' "$commit_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/app/release.json"
+if [[ -n "$upstream_commit" ]]; then
+  printf '{"commit":"%s","built_at":"%s","upstream_commit":"%s"}\n' "$commit_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$upstream_commit" > "$stage/app/release.json"
+else
+  printf '{"commit":"%s","built_at":"%s"}\n' "$commit_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/app/release.json"
+fi
 
 unexpected_link="$(find "$stage/app" -type l -print -quit)"
 [[ -z "$unexpected_link" ]] || { echo "发布 staging 仍包含符号链接：$unexpected_link" >&2; exit 2; }

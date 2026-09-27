@@ -2435,8 +2435,7 @@
         "gpu_spot_median_usd_per_gpu_hr",
         "gpu_forward_p_below_lowest_strike",
         "gpu_forward_lowest_strike_usd"
-      ],
-      "cache_max_age_sec": 86400
+      ]
     },
     {
       "id": "policy_access",

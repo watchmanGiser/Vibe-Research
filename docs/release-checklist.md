@@ -1,34 +1,33 @@
-# 发布前清单(维护者待办)
+# 发布前清单（源码 + 浏览器工作台）
 
-仓库代码与文档已就绪;下面是**只能由维护者拍板 / 提供**的事项,以及发布时序。全部完成前不要 push 公开仓库。
+2026-09-09：以已发布 v1.1.0 为基线，暂撤 Mac 客户端及打包链路，源码版本定为 v1.2.0。
+维护者已授权检查 Issue/PR、修复、提交并推送；新建 Release、删除历史附件及官网部署不在本次操作内。
+撤回范围见 [源码交付说明](source-delivery.md)。M32–M40 安装、公证和实跑记录仅为历史证据，
+不能作为当前源码候选的测试结果；历史工具可在 GitHub 的 v1.1.0 标签查看。
 
-## 1. 待拍板 / 待填
+## 本次发布门槛
 
-| 项 | 现状 | 动作 |
-|---|---|---|
-| License | README / README_en 的 License 段与徽章写"pending" | 选定许可证(引擎 openai/codex 为 Apache-2.0,本仓库不含其源码),加 `LICENSE` 文件,替换两份 README 的徽章与 License 段 |
-| 仓库地址 | README 安装段 `git clone <本仓库地址>` 为占位 | 建公开仓库后替换两份 README 的 clone 地址;可加 Stars 徽章 |
-| 国产模型矩阵 | `providers/{deepseek,qwen,glm,kimi}.json` 的 `matrix.status` 未真测 | 设对应环境变量(`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`——百炼三件套共用;三个百炼模板还要先在 `.local/providers/` 填掉 `{WorkspaceId}`)后 `node orchestrator/src/finance/provider_matrix.ts --provider <id> --model <m>`,按结果回填 `matrix.status / results / note / last_run` 与 `verified_at` |
-| 模板易变字段 | 四个第三方模板 `default_model` / `context_limit_tokens` 未核实(`verified_at: null`) | 对照各厂商当前文档核实后填 `verified_at` |
-| 联系方式与赞赏 | 已按发布规范:X @linsizhen、邮箱、BMC 二维码 `assets/bmc-qr.png` | 核对无误即可 |
+1. 先核对当前公开 main、Release 和本地候选差异，保留他人的修复；确定新版本号，不覆盖旧标签。
+2. macOS / Linux 的 `scripts/setup`、`scripts/start` 与 Windows 的初始化、启动、体检脚本可用。
+   验证依赖缺失、端口占用、两端就绪、退出回收；只绑定本机，局域网仅显式选择后开放。
+3. 后端类型检查与回归、前端测试/类型检查/生产构建、Python 计算库/回测/数据脚本测试。
+   在候选提交上运行跨平台 CI，分清 Windows 选定契约测试与实机完整验收。
+4. 运行 `scripts/doctor --net`，披露数据源限流、缺授权与失败。发布前完成一次不带夹具的完整六阶段研究；
+   core / full 范围、模型来源、平台与跳过项逐一记录，历史安装版成功不能替代源码实跑。
+5. 模型接入覆盖正常、未登录、额度耗尽和不可用状态，不静默换来源。未实跑的 provider 模板
+   不标成已验证；完整供应商矩阵与 Windows Job Object 回收保证仍需各自的证据。
+6. Codex 独立审计 → 核实问题 → 修复 → 复审，无可操作回归后才提交、推送。
+7. 对候选文件和 Git 历史分别扫描凭据；核实每项命中。`.local/`、旧客户端数据、研究材料、
+   浏览器存储、API key、登录态和本地回退备份不进入发布。不要搬用个人 Codex 登录文件。
+8. 中英文 README 对照审查、英文独立通读，检查本地链接、源码启动说明与截图。
+   README 不再引导安装 Mac 客户端；历史记录保持历史身份，不抹掉旧发布事实。
+9. 按 [上游对账规则](../datasources/UPSTREAM.md) 核对移植的数据代码；核对 MIT、依赖许可证、
+   联系方式与赞赏。SDK / 引擎仍保留，不因为撤客户端而删除 AI 能力。
+10. 维护者明确授权后再执行提交、推送、新标签或 Release。删除旧安装包、修改官网入口需单独确定范围，
+    并同步说明已安装用户的数据保留与迁移方法，不能只删一处导致下载入口失效。
 
-## 2. 发布时序(审计必须在 push 之前)
+## 发布后
 
-1. `scripts/doctor --net` 全绿(含密钥扫描 ok);
-2. `(cd orchestrator && npm run typecheck && npm test)`、`python -m pytest calc/tests -q`、`python -m pytest .agents/skills/data-access/scripts/tests -q` 全过;
-3. 一次真实研究运行 complete(🔴 **必须是完整六阶段、不带 `--seed-from` 的运行** —— 硬测试夹具
-   (`--fixture`)会跳过前四阶段、产物按测试运行隔离,**不能替代这一步**;夹具运行的 manifest 带
-   `seeded_from` 且 `test_scenario: true`,一眼可辨)(`node orchestrator/src/run.ts --symbol 300308 --market SZ --python <venv>/bin/python < /dev/null`);
-4. `codex review`(或 `codex exec` 审查提示)→ 逐条核实(会误报)→ 修 → 复审至 "No actionable regressions";
-5. 确认 `.gitignore` 含 `.local/`、仓库内无 `.local/` 内容、无密钥(doctor 密钥扫描 + 人工过一遍 `git status`);
-6. 英文 README 两遍翻译审查(diff 对照 + 纯英文只读);
-6.5 **上游对账**:数据层是从 a-stock-data / global-stock-data / investment-news **移植代码**(不是依赖),
-   上游更新不会自动流过来 → 按 [datasources/UPSTREAM.md](../datasources/UPSTREAM.md) 的方法对一次账。
-   🔴 判据是「这个修复在本产品的代码路径上会不会发生」,**不是版本号是否落后** —— 必须读 release notes 逐条判断;
-7. 填 License / clone 地址 / 徽章 → `CHANGELOG.md` 定版本号 → push + tag + Release。
-
-## 3. 发布后
-
-- 国产模型矩阵结果回填后再发一次小版本;
-- `codex-version.json` 的 `verified_on` 随每次版本验证追加;
-- 用户反馈的源侧限制(东财 push2 / 百度 403 / 申万证书链 / mootdx)记入 `datasources/` 说明,不在代码里静默降级。
+- 将本次验证日期、范围、失败项写入开发与版本记录，不沿用旧测试数作为新结论。
+- 跟踪用户源码初始化与运行反馈；数据源不可用如实披露，不关闭 TLS 或填造数据。
+- Mac 客户端暂撤，不继续维护签名、公证、DMG 产物；未来恢复需重新验收分发链路。
