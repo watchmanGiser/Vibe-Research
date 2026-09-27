@@ -22,3 +22,15 @@ test("远端发布只为 Nginx 开放静态构建目录", () => {
   assert.match(remote, /find "\$staging_dir\/desktop\/dist" -type f -exec chmod 0644/);
   assert.doesNotMatch(remote, /chmod -R/);
 });
+
+
+test("钉钉群结果路由必须要求站点账号且禁用缓存", () => {
+  const nginx = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research.nginx.conf"), "utf8");
+  const route = nginx.match(/location = \/vibe-research\/api\/semi\/dingtalk \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(route, "必须使用精确匹配的专用路由，不能公开落入通用 API 路由");
+  assert.match(route, /auth_basic "/);
+  assert.match(route, /auth_basic_user_file \/etc\/nginx\/\.htpasswd-vibe-research;/);
+  assert.match(route, /include \/etc\/nginx\/snippets\/vibe-research-auth\.nginx\.conf;/);
+  assert.match(route, /proxy_pass http:\/\/127\.0\.0\.1:8092\/semi\/dingtalk;/);
+  assert.match(route, /Cache-Control "private, no-store"/);
+});

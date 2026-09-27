@@ -67,7 +67,7 @@ Nova 本机的 **私有** systemd 用户服务环境（如 `EnvironmentFile` 指
 推送前校验完整分页和会话身份；校验失败不会替换快照。
 不要在发布包中安装服务器侧 DWS 定时器，不要删除 `.local` 或 `shared/semi/`。
 
-网页「资讯雷达 → 钉钉群」只请求 `GET /vibe-research/api/semi/dingtalk`。
+网页「资讯雷达 → 钉钉群」只请求 `GET /vibe-research/api/semi/dingtalk`。该接口在 Nginx 以 `/etc/nginx/.htpasswd-vibe-research` 的现有 `vibe` 网页账号单独保护，未验证时返回 401，响应禁止缓存；其他 API 的 Bearer 注入仍由现有配置负责。**生产启用前要核验这条精确路由确实生效**，切勿把原始群消息正文暴露在公开 API 上。
 这个结果接口随现有看板对外展示已去重的**消息正文和发送者**；
 请勿将不希望公开的群消息加入本地推送源。未生成快照时 API 返回 503，
 页面应标记不可用，不把错误显示为没有消息。
