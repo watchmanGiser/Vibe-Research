@@ -270,8 +270,8 @@ export const backend = {
     }>;
   }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
   dingtalkGroup: (limit = 200) => call<{
-    group: string; syncedAt: string; receivedCount: number; duplicateCount: number;
-    messages: Array<{ messageId: string; time: string; sender: string; text: string; duplicateCount: number }>;
+    schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
+    opinions: Array<{ id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
   }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
   semiStatus: () => call<{
     running: boolean; mode: string; last_error?: string; source_cooldown_remaining?: number;

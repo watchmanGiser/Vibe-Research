@@ -51,23 +51,20 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 /usr/local/sbin/vibe-healthcheck https://soufly.cn/vibe-research
 ```
 
-## 钉钉群结果展示（Nova 本机处理）
+## 击球区观点（仅 Nova 保存原文）
 
-广州服务器只读取 `/opt/vibe-research/shared/semi/dingtalk.json` 的结果快照，
-**不在生产服务器安装 DWS，也不把钉钉登录态、凭据或会话 ID 提交到公开仓库**。
-本机运行 `scripts/push-dingtalk-group.mjs`：先使用 DWS 拉取指定群的完整消息分页，
-按消息 ID 和长文本指纹去重，仅保留最近 90 天；本地保留可供下次去重的完整快照，
-推送前生成只含展示字段的结果快照（不含会话 ID、重复消息原始 ID），
-通过 SSH 传到 `shared/semi/` 下的临时文件，成功后原子替换。
+Nova 用户级 `vibe-research-dingtalk-raw.timer` 每 30 分钟只运行 `scripts/sync-dingtalk-group.mjs`，将原文完整同步并去重，保存到权限受限的
+`DINGTALK_LOCAL_SNAPSHOT_FILE`，独立的 `scripts/push-dingtalk-group.mjs` 在模型提供方许可确认后同步本地原文，并只对超过 120 字的观点调用 Nova 上配置的 Codex GPT CLI
+（可通过 `DINGTALK_GPT_BIN` 指定）；模型将第三方观点整理为主题、概述、要点和待核验风险。原文不自动按 90 天窗口删除。
+原文超过 200000 字、模型调用失败、输出不合规时停止推送，不会退回上传原文。
+已整理的结构化结果仅存 Nova `DINGTALK_LOCAL_SUMMARY_FILE`，按消息指纹缓存避免重复费用。
+仅白名单摘要经 SSH 原子替换线上 `/opt/vibe-research/shared/semi/dingtalk.json`；线上 API 严格拒绝旧
+`messages/text` 格式和多余字段。服务端不安装 DWS 或模型，也不保存群会话 ID、原始消息或发送人。
 
-Nova 本机的 **私有** systemd 用户服务环境（如 `EnvironmentFile` 指向权限 0600 的本机文件）
-必须配置 `DINGTALK_GROUP_NAME`、`DINGTALK_CONVERSATION_ID`、`DINGTALK_PUSH_HOST`、
-`DINGTALK_PUSH_SSH_KEY`，可按需配置 `DWS_BIN`、`DINGTALK_LOCAL_SNAPSHOT_FILE`；
-用户级 timer 每 30 分钟运行，启用 linger 后重启仍可恢复。
-推送前校验完整分页和会话身份；校验失败不会替换快照。
-不要在发布包中安装服务器侧 DWS 定时器，不要删除 `.local` 或 `shared/semi/`。
-
-网页「资讯雷达 → 钉钉群」只请求 `GET /vibe-research/api/semi/dingtalk`。该接口在 Nginx 以 `/etc/nginx/.htpasswd-vibe-research` 的现有 `vibe` 网页账号单独保护，未验证时返回 401，响应禁止缓存；其他 API 的 Bearer 注入仍由现有配置负责。**生产启用前要核验这条精确路由确实生效**，切勿把原始群消息正文暴露在公开 API 上。
-这个结果接口随现有看板对外展示已去重的**消息正文和发送者**；
-请勿将不希望公开的群消息加入本地推送源。未生成快照时 API 返回 503，
-页面应标记不可用，不把错误显示为没有消息。
+私有 systemd 配置 `DINGTALK_GROUP_NAME`、`DINGTALK_CONVERSATION_ID`、
+`DINGTALK_PUSH_HOST`、`DINGTALK_PUSH_SSH_KEY`；这些凭据和本地原文不入仓库。
+**Codex CLI 在 Nova 本地运行但模型推理可能通过配置的供应商服务执行**；在确认第三方资料
+允许此类模型处理、且实际模型可用之前，定时器保持停用。确认后需在 Nova 私有配置显式设置 `DINGTALK_GPT_PROVIDER_APPROVED=1`，单独启用 `vibe-research-dingtalk-push.timer`。不得声称为离线本地模型。
+页面「资讯雷达 → 击球区观点」显示整理结果，非已核验的事实或投资建议。
+当前精确 API 路由由现有 Nginx Basic Auth 保护，缓存禁用。上线前备份旧快照并隔离旧原文，
+不得删除生产 `.local`；版本与审批流程遵循 `deploy/README.md` 其他章节。
