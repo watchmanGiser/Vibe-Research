@@ -269,6 +269,10 @@ export const backend = {
       likes?: number; retweets?: number; replies?: number;
     }>;
   }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
+  dingtalkGroup: (limit = 200) => call<{
+    group: string; syncedAt: string; receivedCount: number; duplicateCount: number;
+    messages: Array<{ messageId: string; time: string; sender: string; text: string; duplicateCount: number }>;
+  }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
   semiStatus: () => call<{
     running: boolean; mode: string; last_error?: string; source_cooldown_remaining?: number;
     counts?: { total?: number; translated?: number }; pushed_at?: string; transport?: string;

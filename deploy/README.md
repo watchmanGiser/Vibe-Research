@@ -50,3 +50,24 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 ```bash
 /usr/local/sbin/vibe-healthcheck https://soufly.cn/vibe-research
 ```
+
+## 钉钉群结果展示（Nova 本机处理）
+
+广州服务器只读取 `/opt/vibe-research/shared/semi/dingtalk.json` 的结果快照，
+**不在生产服务器安装 DWS，也不把钉钉登录态、凭据或会话 ID 提交到公开仓库**。
+本机运行 `scripts/push-dingtalk-group.mjs`：先使用 DWS 拉取指定群的完整消息分页，
+按消息 ID 和长文本指纹去重，仅保留最近 90 天；本地保留可供下次去重的完整快照，
+推送前生成只含展示字段的结果快照（不含会话 ID、重复消息原始 ID），
+通过 SSH 传到 `shared/semi/` 下的临时文件，成功后原子替换。
+
+Nova 本机的 **私有** systemd 用户服务环境（如 `EnvironmentFile` 指向权限 0600 的本机文件）
+必须配置 `DINGTALK_GROUP_NAME`、`DINGTALK_CONVERSATION_ID`、`DINGTALK_PUSH_HOST`、
+`DINGTALK_PUSH_SSH_KEY`，可按需配置 `DWS_BIN`、`DINGTALK_LOCAL_SNAPSHOT_FILE`；
+用户级 timer 每 30 分钟运行，启用 linger 后重启仍可恢复。
+推送前校验完整分页和会话身份；校验失败不会替换快照。
+不要在发布包中安装服务器侧 DWS 定时器，不要删除 `.local` 或 `shared/semi/`。
+
+网页「资讯雷达 → 钉钉群」只请求 `GET /vibe-research/api/semi/dingtalk`。
+这个结果接口随现有看板对外展示已去重的**消息正文和发送者**；
+请勿将不希望公开的群消息加入本地推送源。未生成快照时 API 返回 503，
+页面应标记不可用，不把错误显示为没有消息。

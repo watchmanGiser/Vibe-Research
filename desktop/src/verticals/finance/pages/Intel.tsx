@@ -20,6 +20,7 @@ const TABS = [
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
   { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
   { key: "semi", label: "Semi动态", icon: MessageSquareText, integrated: true, desc: "nova 抓取并主动推送到广州的 Semi 行业动态" },
+  { key: "dingtalk", label: "钉钉群", icon: MessageSquareText, integrated: false, desc: "Nova 本地定时处理并去重后推送的群消息" },
   { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
   { key: "events", label: "事件概率", icon: TrendingUp, integrated: true, desc: "全球宏观预期概率 —— 预测市场的公开定价（Polymarket / Kalshi），只读、免登录" },
 ];
@@ -535,6 +536,52 @@ function SemiPanel() {
   );
 }
 
+function DingTalkGroupPanel() {
+  type Feed = { group: string; syncedAt: string; receivedCount: number; duplicateCount: number; messages: Array<{ messageId: string; time: string; sender: string; text: string; duplicateCount: number }> };
+  const [data, setData] = useState<Feed | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const load = useCallback(async () => {
+    setLoading(true); setErr("");
+    try { setData(await api.dingtalkGroup(200)); }
+    catch (error) { setErr(error instanceof Error ? error.message : String(error)); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  const synced = data?.syncedAt ? new Date(data.syncedAt).toLocaleString("zh-CN", { hour12: false }) : "尚未同步";
+  const syncDelayed = !!data?.syncedAt && Date.now() - new Date(data.syncedAt).getTime() > 60 * 60 * 1000;
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>{data?.group || "钉钉群"} · 定时同步约每 30 分钟</span>
+        <span>最近同步 {synced}</span>
+        {syncDelayed && <span className="text-warning">同步已延迟，请核查定时任务</span>}
+        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">当前 {data?.messages.length ?? 0} 条</span>
+        <span className="rounded-full bg-muted px-2 py-0.5">已合并重复 {data?.duplicateCount ?? 0} 条</span>
+        <button onClick={() => void load()} disabled={loading} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 hover:text-primary disabled:opacity-50">
+          <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> 刷新展示
+        </button>
+      </div>
+      {err ? (
+        <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{err}<p className="mt-1 text-xs">同步任务尚未运行或快照暂不可用；请勿将此状态理解为群内没有新消息。</p></div>
+      ) : loading && !data ? (
+        <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> 正在读取钉钉群消息…</p>
+      ) : !data?.messages.length ? (
+        <div className="rounded-lg border border-dashed border-border/70 p-10 text-center"><p className="text-sm font-medium">暂时没有可展示的群消息</p><p className="mt-2 text-xs text-muted-foreground">同步成功且消息窗口完整后会显示在这里。</p></div>
+      ) : (
+        <div className="divide-y divide-border/40">
+          {data.messages.map((item) => (
+            <article key={item.messageId} className="py-4 first:pt-0 last:pb-0">
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"><time>{item.time}</time><span className="font-medium text-foreground">{item.sender}</span>{item.duplicateCount > 0 && <span className="rounded-full bg-muted px-2 py-0.5">已合并 {item.duplicateCount} 条重复转发</span>}</div>
+              <p className="whitespace-pre-wrap break-words text-sm leading-6">{item.text}</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Intel() {
   // 当前 Tab 由路由驱动（/intel/:tab），与侧栏子栏目联动；不认识的参数回落到第一个
   const { tab: tabParam } = useParams();
@@ -571,11 +618,14 @@ export function Intel() {
           {/* ⚠️ 徽章上印的是**源名**,不是"已接入" —— 别的 tab 接入了别的源,不能共用这一个标签 */}
           {cur.key === "investment-news" && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">investment-news</span>}
           {cur.key === "semi" && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">nova-push</span>}
+          {cur.key === "dingtalk" && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">Nova · 去重</span>}
         </div>
         {cur.key === "investment-news" ? (
           <InvestmentNewsPanel />
         ) : cur.key === "semi" ? (
           <SemiPanel />
+        ) : cur.key === "dingtalk" ? (
+          <DingTalkGroupPanel />
         ) : cur.key === "filings" ? (
           <WatchlistFeed kind="filings" />
         ) : cur.key === "news" ? (
@@ -591,7 +641,9 @@ export function Intel() {
       </GlassCard>
 
       <p className="mt-3 text-[11px] text-muted-foreground/60">
-        只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。
+        {cur.key === "dingtalk"
+          ? "本页展示 Nova 本地处理后推送的群消息，仅作研究线索；群内说法未经公告核验，不等同于已确认事实，也不构成投资建议。"
+          : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
       </p>
       <Disclaimer />
     </div>

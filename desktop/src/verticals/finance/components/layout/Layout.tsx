@@ -39,6 +39,7 @@ const INTEL_LINKS = [
   { to: "/intel/investment-news", icon: Rss, label: "Investment News" },
   { to: "/intel/news", icon: Newspaper, label: "公开新闻" },
   { to: "/intel/semi", icon: MessageSquareText, label: "Semi动态" },
+  { to: "/intel/dingtalk", icon: MessageSquareText, label: "钉钉群" },
   { to: "/intel/filings", icon: FileText, label: "A股公告" },
   { to: "/intel/events", icon: TrendingUp, label: "事件概率" },
 ];
