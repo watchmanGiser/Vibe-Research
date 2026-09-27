@@ -23,7 +23,10 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     assert.notEqual(noConsent.status, 0); assert.equal(fs.existsSync(calls), false, '未经确认不得同步或推送');
     const original = '研究调研原文内容仅应在 Nova 本地保留。'.repeat(15);
     fs.writeFileSync(response, JSON.stringify({ complete: true, messages: [{ messageId: 'private-id', conversationId: 'private-conversation', text: original, sender: '甲', createTime: new Date().toISOString() }] }));
-    let result = run(); assert.equal(result.status, 0, result.stderr);
+    let result = run({ DINGTALK_SUMMARY_ONLY: '1' }); assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(calls), true); assert.equal(fs.readFileSync(calls, 'utf8'), 'gpt\n');
+    assert.equal(fs.existsSync(captured), false, '本地试运行不可上传');
+    result = run(); assert.equal(result.status, 0, result.stderr);
     assert.ok(fs.readFileSync(env.DINGTALK_LOCAL_SNAPSHOT_FILE, 'utf8').includes(original));
     const published = fs.readFileSync(captured, 'utf8');
     assert.doesNotMatch(published, /private-conversation|private-id|研究调研原文内容|sender|textHash|messages/);

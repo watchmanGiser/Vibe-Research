@@ -56,7 +56,7 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 模板（安装到 `~/.config/systemd/user/`）每 30 分钟只运行 `scripts/sync-dingtalk-group.mjs`，将原文完整同步并去重，保存到权限受限的
 `DINGTALK_LOCAL_SNAPSHOT_FILE`，独立的 `scripts/push-dingtalk-group.mjs` 在模型提供方许可确认后同步本地原文，并只对超过 120 字的观点调用 Nova 上配置的 Codex GPT CLI
 （可通过 `DINGTALK_GPT_BIN` 指定）；模型将第三方观点整理为主题、概述、要点和待核验风险。原文不自动按 90 天窗口删除。
-原文超过 200000 字、模型调用失败、输出不合规时停止推送，不会退回上传原文。
+上线前可用 `DINGTALK_SUMMARY_ONLY=1` 本地试运行，不执行 scp/ssh；原文超过 200000 字、模型调用失败、输出不合规时停止推送，不会退回上传原文。
 已整理的结构化结果仅存 Nova `DINGTALK_LOCAL_SUMMARY_FILE`，按消息指纹缓存避免重复费用。
 仅白名单摘要经 SSH 原子替换线上 `/opt/vibe-research/shared/semi/dingtalk.json`；线上 API 严格拒绝旧
 `messages/text` 格式和多余字段。服务端不安装 DWS 或模型，也不保存群会话 ID、原始消息或发送人。
