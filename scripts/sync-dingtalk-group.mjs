@@ -71,8 +71,8 @@ for (const source of response.messages) {
   seenIds.add(messageId);
   if (fp) byFingerprint.set(fp, message);
 }
-const cutoff = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-const messages = [...byId.values()].filter((m) => m.time >= cutoff).sort((a, b) => b.time.localeCompare(a.time));
+// 原文只保存在 Nova：不按展示窗口删除历史原始消息，避免定时整理丢失可追溯性。
+const messages = [...byId.values()].sort((a, b) => b.time.localeCompare(a.time));
 const snapshot = {
   group,
   conversationId: expectedConversationId,

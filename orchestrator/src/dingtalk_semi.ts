@@ -1,58 +1,24 @@
-/** 线上仅读取 Nova 推送的去重快照，不连接钉钉或加载 DWS 凭据。 */
-import fs from "node:fs";
-import { createHash } from "node:crypto";
-
-export type DingTalkGroupMessage = {
-  messageId: string;
-  time: string;
-  sender: string;
-  text: string;
-  duplicateCount: number;
-};
-
-type DingTalkGroupFeed = {
-  group: string;
-  syncedAt: string;
-  receivedCount: number;
-  duplicateCount: number;
-  messages: DingTalkGroupMessage[];
-};
-
-export class DingTalkSnapshotError extends Error {
-  readonly status = 503;
-}
-
-export function fetchDingTalkGroup(limit = 200): DingTalkGroupFeed {
-  const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE?.trim() || "/opt/vibe-research/shared/semi/dingtalk.json";
-  let value: unknown;
-  try {
-    value = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    // 不把服务器绝对路径、文件内容或系统错误详情暴露给浏览器。
-    throw new DingTalkSnapshotError("钉钉群消息快照暂不可用");
-  }
-  if (!value || typeof value !== "object") throw new DingTalkSnapshotError("钉钉群消息快照格式无效");
-  const snapshot = value as Record<string, unknown>;
-  if (typeof snapshot.group !== "string" || !snapshot.group ||
-      typeof snapshot.syncedAt !== "string" || !Number.isFinite(Date.parse(snapshot.syncedAt)) ||
-      typeof snapshot.receivedCount !== "number" || !Number.isInteger(snapshot.receivedCount) || snapshot.receivedCount < 0 ||
-      typeof snapshot.duplicateCount !== "number" || !Number.isInteger(snapshot.duplicateCount) || snapshot.duplicateCount < 0 ||
-      !Array.isArray(snapshot.messages)) throw new DingTalkSnapshotError("钉钉群消息快照格式无效");
-
-  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 200;
-  const messages = snapshot.messages.slice(0, safeLimit).map((item: unknown) => {
-    if (!item || typeof item !== "object") throw new DingTalkSnapshotError("钉钉群消息快照格式无效");
+/** 线上仅读取 Nova 推送的结构化第三方观点摘要；旧原文格式一律拒绝。 */
+import fs from 'node:fs';
+export class DingTalkSnapshotError extends Error { readonly status = 503; }
+const exact = (o: Record<string, unknown>, keys: string[]) => Object.keys(o).sort().join(',') === keys.sort().join(',');
+const text = (x: unknown, n: number) => typeof x === 'string' && x.trim().length > 0 && x.length <= n;
+export function fetchDingTalkGroup(limit = 200) {
+  const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE?.trim() || '/opt/vibe-research/shared/semi/dingtalk.json';
+  let v: unknown;
+  try { v = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new DingTalkSnapshotError('击球区观点摘要暂不可用'); }
+  if (!v || typeof v !== 'object' || !exact(v as Record<string, unknown>, ['schemaVersion', 'label', 'syncedAt', 'duplicateCount', 'opinions'])) throw new DingTalkSnapshotError('观点摘要格式无效');
+  const data = v as Record<string, unknown>;
+  if (data.schemaVersion !== 2 || data.label !== '击球区观点' || !text(data.syncedAt, 60) || !Number.isFinite(Date.parse(data.syncedAt as string)) ||
+      !Number.isInteger(data.duplicateCount) || (data.duplicateCount as number) < 0 || !Array.isArray(data.opinions)) throw new DingTalkSnapshotError('观点摘要格式无效');
+  const opinions = data.opinions.map((item: unknown) => {
+    if (!item || typeof item !== 'object' || !exact(item as Record<string, unknown>, ['id', 'time', 'title', 'summary', 'keyPoints', 'caveats'])) throw new DingTalkSnapshotError('观点摘要格式无效');
     const m = item as Record<string, unknown>;
-    if (typeof m.messageId !== "string" || !m.messageId ||
-        typeof m.time !== "string" || typeof m.sender !== "string" || typeof m.text !== "string" ||
-        typeof m.duplicateCount !== "number" || !Number.isInteger(m.duplicateCount) || m.duplicateCount < 0) {
-      throw new DingTalkSnapshotError("钉钉群消息快照格式无效");
-    }
-    // 只返回展示字段，内部会话 ID、重复消息 ID、原始响应都留在本地/快照里。
-    return { messageId: createHash("sha256").update(m.messageId).digest("hex"), time: m.time, sender: m.sender, text: m.text, duplicateCount: m.duplicateCount };
+    if (typeof m.id !== 'string' || !/^[a-f0-9]{64}$/.test(m.id) || !text(m.time, 60) || !Number.isFinite(Date.parse(m.time as string)) ||
+      !text(m.title, 100) || !text(m.summary, 800) || !Array.isArray(m.keyPoints) || m.keyPoints.length < 1 || m.keyPoints.length > 6 || !m.keyPoints.every((s) => text(s, 240)) ||
+      !Array.isArray(m.caveats) || m.caveats.length > 5 || !m.caveats.every((s) => text(s, 240))) throw new DingTalkSnapshotError('观点摘要格式无效');
+    return m as { id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] };
   });
-  return {
-    group: snapshot.group, syncedAt: snapshot.syncedAt,
-    receivedCount: snapshot.receivedCount, duplicateCount: snapshot.duplicateCount, messages,
-  };
+  return { schemaVersion: 2, label: '击球区观点', syncedAt: data.syncedAt as string, duplicateCount: data.duplicateCount as number,
+    opinions: opinions.slice(0, Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 200) };
 }

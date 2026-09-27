@@ -34,3 +34,11 @@ test("钉钉群结果路由必须要求站点账号且禁用缓存", () => {
   assert.match(route, /proxy_pass http:\/\/127\.0\.0\.1:8092\/semi\/dingtalk;/);
   assert.match(route, /Cache-Control "private, no-store"/);
 });
+
+test("Nova 原文定时器只能调用本地同步脚本，绝不执行推送", () => {
+  const service = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research-dingtalk-raw.service"), "utf8");
+  const timer = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research-dingtalk-raw.timer"), "utf8");
+  assert.match(service, /ExecStart=.*sync-dingtalk-group\.mjs/);
+  assert.doesNotMatch(service, /push-dingtalk-group|scp|ssh/);
+  assert.match(timer, /Unit=vibe-research-dingtalk-raw\.service/);
+});

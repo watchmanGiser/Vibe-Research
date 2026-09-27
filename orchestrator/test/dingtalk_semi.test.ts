@@ -1,62 +1,39 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs";
-import { createHash } from "node:crypto";
-import os from "node:os";
-import path from "node:path";
-import { fetchDingTalkGroup, DingTalkSnapshotError } from "../src/dingtalk_semi.ts";
-
-test("只读去重结果并限制数量，不泄露内部会话及重复消息 ID", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-dingtalk-api-"));
-  const previous = process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fetchDingTalkGroup, DingTalkSnapshotError } from '../src/dingtalk_semi.ts';
+const opinion = { id: 'a'.repeat(64), time: '2026-09-27T00:00:00Z', title: '行业调研', summary: '第三方观点尚待核验', keyPoints: ['需求变化待核验'], caveats: ['缺少独立证据'] };
+const snapshot = { schemaVersion: 2, label: '击球区观点', syncedAt: '2026-09-27T00:00:00Z', duplicateCount: 1, opinions: [opinion] };
+test('拒绝旧消息原文和任何额外字段，仅接受摘要白名单', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-api-'));
+  const prior = process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
   try {
-    process.env.DINGTALK_SEMI_SNAPSHOT_FILE = path.join(dir, "snapshot.json");
+    const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE = path.join(dir, 'feed.json');
     assert.throws(() => fetchDingTalkGroup(), DingTalkSnapshotError);
-    fs.writeFileSync(process.env.DINGTALK_SEMI_SNAPSHOT_FILE, JSON.stringify({
-      group: "测试群", conversationId: "internal-conversation", syncedAt: "2026-09-27T00:00:00.000Z",
-      windowStart: "internal-window", receivedCount: 2, duplicateCount: 1,
-      messages: [{ messageId: "item-1", time: "2026-09-27T00:00:00Z", sender: "甲", text: "测试消息", duplicateCount: 1,
-        duplicateMessageIds: ["internal-duplicate"], latestDuplicateTime: "internal-time" }],
-    }));
-    const feed = fetchDingTalkGroup(1);
-    assert.deepEqual(Object.keys(feed).sort(), ["duplicateCount", "group", "messages", "receivedCount", "syncedAt"]);
-    assert.deepEqual(feed.messages, [{ messageId: createHash("sha256").update("item-1").digest("hex"), time: "2026-09-27T00:00:00Z", sender: "甲", text: "测试消息", duplicateCount: 1 }]);
-    assert.equal(fetchDingTalkGroup(0).messages.length, 1);
-    fs.writeFileSync(process.env.DINGTALK_SEMI_SNAPSHOT_FILE, JSON.stringify({ group: "测试群", messages: [] }));
+    fs.writeFileSync(file, JSON.stringify({ group: '旧格式', messages: [{ text: '原文' }] }));
     assert.throws(() => fetchDingTalkGroup(), DingTalkSnapshotError);
-  } finally {
-    if (previous === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
-    else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = previous;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+    fs.writeFileSync(file, JSON.stringify({ ...snapshot, opinions: [{ ...opinion, text: '原文' }] }));
+    assert.throws(() => fetchDingTalkGroup(), DingTalkSnapshotError);
+    fs.writeFileSync(file, JSON.stringify(snapshot));
+    assert.deepEqual(fetchDingTalkGroup().opinions, [opinion]);
+  } finally { if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(dir, { recursive: true, force: true }); }
 });
-
-test("HTTP 路由必须鉴权；快照缺失是 503，结果仅返回展示字段", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-dingtalk-http-"));
-  const previous = process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
-  const token = "test-dingtalk-token-0123456789";
-  const { createApiServer } = await import("../src/api.ts");
-  const server = createApiServer({ repoRoot: path.resolve("."), dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null }, { token });
+test('HTTP 鉴权、缺失 503 与只读摘要', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-http-'));
+  const prior = process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
+  const { createApiServer } = await import('../src/api.ts');
+  const token = 'test-token-0123456789';
+  const server = createApiServer({ repoRoot: path.resolve('.'), dataRoot: root, python: 'python3', node: process.execPath, providerEnvKey: null }, { token });
   try {
-    process.env.DINGTALK_SEMI_SNAPSHOT_FILE = path.join(root, "feed.json");
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
-    const read = (withAuth: boolean) => fetch(`${base}/semi/dingtalk?limit=1`, { headers: withAuth ? { Authorization: `Bearer ${token}` } : {} });
-    assert.equal((await read(false)).status, 401);
-    assert.equal((await read(true)).status, 503);
-    fs.writeFileSync(process.env.DINGTALK_SEMI_SNAPSHOT_FILE, JSON.stringify({
-      group: "测试群", conversationId: "private-conversation", syncedAt: new Date().toISOString(), receivedCount: 1, duplicateCount: 0,
-      messages: [{ messageId: "hash-id", time: new Date().toISOString(), sender: "甲", text: "测试文本", duplicateCount: 0, duplicateMessageIds: ["secret-id"] }],
-    }));
-    const response = await read(true);
-    assert.equal(response.status, 200);
-    const body = await response.text();
-    assert.doesNotMatch(body, /private-conversation|secret-id|hash-id/);
-    assert.equal(JSON.parse(body).messages.length, 1);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (previous === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
-    else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = previous;
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+    const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE = path.join(root, 'feed.json');
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/semi/dingtalk`;
+    assert.equal((await fetch(url)).status, 401);
+    assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).status, 503);
+    fs.writeFileSync(file, JSON.stringify(snapshot));
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(r.status, 200); assert.deepEqual((await r.json()).opinions, [opinion]);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(root, { recursive: true, force: true }); }
 });
