@@ -221,7 +221,7 @@ test("首页 Agent 是可发送的真实对话区,不是装饰输入框", () => 
   assert.match(hasLlmBlock, /readAiRuntime\(\)/, "全局对话必须识别浏览器里保存的 AI 来源");
   assert.doesNotMatch(hasLlmBlock, /cached|optimistic|backendProvider/,
     "首次接入必须由用户明确选择，不能暗中回落到后端环境变量");
-  assert.match(layoutSrc, /pathname !== "\/" && <FinanceAiDock/);
+  assert.match(layoutSrc, /pathname !== "\/" && pathname !== "\/realtime" && <FinanceAiDock/);
   assert.doesNotMatch(layoutSrc, /FinanceAiConsole|vr-ai-console|toggleConsole/,
     "首页与右上角是聊天入口，不恢复左下角旧卡片");
 });

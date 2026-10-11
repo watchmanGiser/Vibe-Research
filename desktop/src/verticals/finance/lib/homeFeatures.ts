@@ -3,11 +3,16 @@
  * 每组列出它的二级栏目；只有一个页面的一级就列这一页。
  */
 export const HOME_FEATURE_GROUPS = [
+  { title: "实时成交", detail: "查看盘中成交与市场资金", features: [
+    { to: "/realtime", title: "实时成交", detail: "实时成交分析与重点标的跟踪" },
+  ] },
   { title: "每日复盘", detail: "收盘后回头看今天", features: [
     { to: "/daily-review", title: "每日复盘", detail: "盘面表现、资金、连板与涨停分档" },
   ] },
   { title: "产业资讯", detail: "产业正在发生什么", features: [
     { to: "/intel", title: "资讯雷达", detail: "聚合新闻、公告与事件线索" },
+    { to: "/intel/semi", title: "Semi动态", detail: "跟踪动态及中文整理" },
+    { to: "/intel/dingtalk", title: "击球区观点", detail: "第三方调研纪要与观点摘要" },
     { to: "/signals", title: "产业信号", detail: "跟踪上下游的变化线索" },
   ] },
   { title: "产业研究", detail: "按板块拆产业链", features: [

@@ -141,6 +141,7 @@
     border-bottom: 1px solid hsl(var(--border));
   }
   .workspace-content { max-width: 1680px; margin: 0 auto; padding: 14px 18px 24px; }
+  .workspace-content.workspace-content-realtime { max-width: none; height: 100%; padding: 12px; }
   .workspace-content > div > .glass { margin-bottom: 10px; }
   .workspace-kicker { font-family: var(--workspace-mono-font); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: hsl(var(--primary)); }
   .workspace-title { font-family: var(--workspace-display-font); font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }

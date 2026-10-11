@@ -29,7 +29,7 @@
 
 Vibe Research is a research workbench for China A-shares, US stocks, and Hong Kong stocks. Open it to see the indices, your watchlist, and your holdings P&L first, then review the market, follow the news, research industries and companies, and test ideas, all in one page, and your research records and documents stay on your own computer.
 
-- **8 primary sections**: Home, Daily review, Industry news, Industry research, Research tools, My stocks, Library, and Connect AI. Home opens with China and global indices, then your watchlist and holdings (with holdings P&L and today's P&L, prices refreshing on their own while markets are open), and the chat below them. Sections with several pages fold them into a second level; Research tools, for example, holds Company deep dive, Bull/bear debate, Backtesting, and Candidate pool, and Industry research lists each sector directly.
+- **9 primary sections**: Home, Real-time Turnover, Daily review, Industry news, Industry research, Research tools, My stocks, Library, Connect AI. Home opens with China and global indices, then your watchlist and holdings (with holdings P&L and today's P&L, prices refreshing on their own while markets are open), and the chat below them. Sections with several pages fold them into a second level; Research tools, for example, holds Company deep dive, Bull/bear debate, Backtesting, and Candidate pool, and Industry research lists each sector directly.
 - **168 data endpoints** (35 layers) across CN, US, and HK: quotes, candles, tick trades, financial statements, consensus, filings, reports, fund flows, Southbound flows and A/H premiums, top-10 shareholders, revenue breakdowns, US and HK company profiles, dividends, and earnings release dates, options, index constituents and valuation, futures and commodities, earnings previews / institutional visits / insider trades / buybacks / share pledges / dragon-tiger list / lock-up expiries, convertible bonds, SEC / FINRA / CBOE, news, macro data, industry thermometers, hiring, and more.
 - **Six-stage company research (A-shares, Hong Kong, US)**: company profile → financials → earnings expectations → valuation → risk → report. Raw data keeps its source; derived figures keep their calculations.
 - **Document library**: import PDFs, Word files, and more; search them, ask questions, and follow citations back to the source text.
@@ -52,7 +52,7 @@ The product UI is in Chinese.
 
 </details>
 
-The home page opens with indices, your watchlist, and holdings, then the AI chat, then links into each feature grouped by six primary sections. The sidebar stays expanded by default and can be collapsed.
+The home page opens with indices, your watchlist, and holdings, then the AI chat, then links into each feature grouped by seven primary sections. The sidebar stays expanded by default and can be collapsed.
 
 <table>
 <tr>
@@ -81,13 +81,16 @@ Captured on October 10, 2026 from the development build (market closed), in a se
 
 ## Features
 
-The sidebar has 8 primary sections; those with several pages fold them into a second level (click the arrow next to a section to expand it; with the sidebar collapsed to icons, clicking an icon opens its pages beside it):
+The sidebar has 9 primary sections; those with several pages fold them into a second level (click the arrow next to a section to expand it; with the sidebar collapsed to icons, clicking an icon opens its pages beside it):
 
 | Section | Page | What it does |
 |---|---|---|
 | Home | — | China and global indices, your watchlist, and your holdings (market value, holdings P&L, today's P&L, prices refreshing on their own while markets are open) first; chat with AI below, and open features from the grouped directory |
+| Real-time Turnover | — | Guangzhou feeds and real-time analysis |
 | Daily review | — | Where the market stands at a glance: breadth, turnover, short-term sentiment (limit-ups / limit-downs / failed seals, how yesterday's limit-ups did today, promotion rates, limit-up streaks), where the indices sit over the longer term, margin balance, equity vs. bond yields, sector fund flows, and the Dragon-Tiger list; limit-up stocks grouped by industry and compared with the previous two trading days |
 | Industry news | Intelligence radar | News, company filings, and event leads that warrant further checking |
+| Industry news | Semi Feed | Guangzhou feeds and real-time analysis |
+| Industry news | Research Summaries | Guangzhou feeds and real-time analysis |
 | Industry news | Industry signals | Supply-chain signals such as GPU rental rates, monthly industry data, raw materials, and hiring |
 | Industry research | 20 sectors | The sidebar lists the 20 industry sectors directly (click Industry research itself for an overview of all of them). Each sector has its own page with a set of step-by-step research prompts: have the AI read the research reports first, then work through technology roadmaps, the supply chain, and the competitive landscape one page at a time; copy a prompt into your own AI or drop it into the chat in the upper-right corner. Your AI produces the sector content from what it finds; the product doesn't pre-fill it |
 | Research tools | Company deep dive | Pick one stock (A-share, Hong Kong, or US) and switch between two tabs: **Overview** shows the candlestick chart, an earnings preview and review, and event reviews (earnings pre-announcements, major-shareholder trades, buybacks, institutional visits, dragon-tiger list appearances, and lock-up expiries for A-shares; earnings releases for Hong Kong and US stocks); **Deep research** works through business, financials, earnings expectations, valuation, and risks to produce an evidence-backed report that can be turned into a share card |

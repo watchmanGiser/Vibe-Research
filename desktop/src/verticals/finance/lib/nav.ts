@@ -10,7 +10,7 @@
  * 最后才是研究工具；候选池放研究工具最后。
  */
 export const NAV_ICONS = [
-  "Home", "Swords", "Activity", "Radar", "Thermometer", "LayoutGrid", "CandlestickChart",
+  "Home", "Swords", "Activity", "Radar", "RadioTower", "Thermometer", "LayoutGrid", "CandlestickChart",
   "FlaskConical", "ListFilter", "Star", "Wallet", "CalendarDays", "Bell", "Library", "FileText", "NotebookPen", "Settings",
   // 各板块（sectors.json 的 icon 字段）
   "Bot", "Cpu", "MemoryStick", "Cable", "CircuitBoard", "Microchip", "BatteryFull", "Plane", "Car", "Pill",
@@ -35,9 +35,13 @@ export interface NavSection {
 
 export const NAV_SECTIONS: NavSection[] = [
   { label: "首页", icon: "Home", pages: [{ to: "/", label: "首页", icon: "Home" }] },
+  { label: "实时成交", icon: "RadioTower", pages: [{ to: "/realtime", label: "实时成交", icon: "RadioTower" }] },
   { label: "每日复盘", icon: "Activity", pages: [{ to: "/daily-review", label: "每日复盘", icon: "Activity" }] },
   { label: "产业资讯", icon: "Radar", pages: [
     { to: "/intel", label: "资讯雷达", icon: "Radar" },
+
+    { to: "/intel/semi", label: "Semi动态", icon: "Radar" },
+    { to: "/intel/dingtalk", label: "击球区观点", icon: "FileText" },
     { to: "/signals", label: "产业信号", icon: "Thermometer" },
   ] },
   { label: "产业研究", icon: "LayoutGrid", overview: { to: "/sectors", label: "产业研究", icon: "LayoutGrid" }, listsSectors: true, pages: [] },

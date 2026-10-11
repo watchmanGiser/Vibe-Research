@@ -11,6 +11,7 @@
  *    底座 token 浏览器永远拿不到;模型 key 是**用户自己的**,存在他自己的 localStorage 里,
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
+import { apiUrl } from "./api-base.ts";
 import { readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts";
 import type { ImportResult } from "./importPositions.ts";
 import type { NotifyOverview } from "./notify.ts";
@@ -208,7 +209,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const agentPath = isAgentPath(path);
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(apiUrl(path), {
       ...init,
       headers: {
         Accept: "application/json",
@@ -267,6 +268,24 @@ async function ensureSelectedLocalAgentReady(llm: unknown, signal?: AbortSignal)
 }
 
 export const backend = {
+  semiTweets: (limit = 100) => call<{
+    source: string; count: number; total: number; translated: number; pushed_at?: string; transport?: string;
+    items: Array<{
+      id: string; handle?: string; author_name?: string; author_screen?: string;
+      created_ts?: number; text?: string; zh?: string; take?: string; category?: string;
+      url?: string; author_avatar?: string; media?: string | string[]; translated?: number;
+      likes?: number; retweets?: number; replies?: number;
+    }>;
+  }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
+  dingtalkGroup: (limit = 200) => call<{
+    schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
+    opinions: Array<{ id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
+  }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
+  semiStatus: () => call<{
+    running: boolean; mode: string; last_error?: string; source_cooldown_remaining?: number;
+    counts?: { total?: number; translated?: number }; pushed_at?: string; transport?: string;
+  }>("/semi/status"),
+
   importPositions: (files: { name: string; content_base64: string }[], signal?: AbortSignal) => {
     const runtime = requestRuntime();
     return call<ImportResult>("/import", { method: "POST", signal,

@@ -11,6 +11,7 @@
  *  ② 取不到的数给 `null` 不给 `0`；接口类型必须如实允许 null。
  *  ③ 鉴权与密钥都不在浏览器:Bearer 由 Vite 代理注入(见 vite.config.ts)。
  */
+import { apiUrl } from "./api-base.ts";
 import { saveBlob } from "./download.ts";
 import {
   ApiError, backend, noteKV, num, round2, rows, scalar, str,
@@ -42,7 +43,7 @@ export const authHeaders = (): Record<string, string> => ({});
 
 export async function downloadReport(id: string, name: string): Promise<void> {
   let res: Response;
-  try { res = await fetch(`/api/reports/${encodeURIComponent(id)}/download`); }
+  try { res = await fetch(apiUrl(`/reports/${encodeURIComponent(id)}/download`)); }
   catch (e) { throw new ApiError(`连接不到编排器 API:${e instanceof Error ? e.message : String(e)}`, 0, "network"); }
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -744,6 +745,9 @@ function globalIndexRows(e: Envelope): GlobalIndex[] {
 }
 
 export const api = {
+  semiTweets: (limit = 100) => backend.semiTweets(limit),
+  semiStatus: () => backend.semiStatus(),
+  dingtalkGroup: (limit = 200) => backend.dingtalkGroup(limit),
   quote: (codes: string, refresh = false) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean), refresh),
   announcements: announcementsOf,
   news: newsOf,

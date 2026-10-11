@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Vibe Research GPU rent incremental refresh
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=10m
+Unit=vibe-research-gpu-refresh.service
+
+[Install]
+WantedBy=timers.target

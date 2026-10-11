@@ -40,6 +40,19 @@ test("清仓名称备注可选、真实保存重读，旧记录兼容，长备�
   assert.equal(listRecords(root, "closed_position").length, 2);
 });
 
+test("同一毫秒的单条与连续批次录入仍按先后排序", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-11T08:00:00Z") });
+  const root = tmpRoot();
+  const kind = anyKind();
+  const input = buildMinimal(kind);
+  const first = upsertRecord(root, kind, input);
+  const batch = insertRecords(root, kind, [{ ...input }, { ...input }]);
+  const next = insertRecords(root, kind, [{ ...input }]);
+  assert.deepEqual(listRecords(root, kind).map((r) => r.id), [first.id, ...batch.map((r) => r.id), next[0]!.id]);
+  assert.ok(first.created_at < batch[0]!.created_at);
+  assert.ok(batch[1]!.created_at < next[0]!.created_at);
+});
+
 test("整批新增:全部写进去、id 各不相同、录入时间按传入顺序递增;信封字段由 Core 定", () => {
   const root = tmpRoot();
   const k = anyKind();

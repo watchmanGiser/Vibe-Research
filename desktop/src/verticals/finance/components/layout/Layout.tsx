@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigation } from "react-router-dom";
 import {
-  Activity, Bell, CalendarDays, CandlestickChart, ChevronsLeft, ChevronsRight, Eye, EyeOff, FileText, FlaskConical, Github, Globe, Home, LayoutGrid, Library, ListFilter, Menu, X, Moon, NotebookPen, Radar, Settings, Star, Sun, Swords, Thermometer, UserRound, Wallet,
+  Activity, Bell, CalendarDays, CandlestickChart, ChevronsLeft, ChevronsRight, Eye, EyeOff, FileText, FlaskConical, Github, Globe, Home, LayoutGrid, Library, ListFilter, Menu, X, Moon, NotebookPen, Radar, RadioTower, Settings, Star, Sun, Swords, Thermometer, UserRound, Wallet,
   Atom, BatteryCharging, BatteryFull, Bot, BrainCircuit, Cable, Car, CircuitBoard, Cpu, Database, Dna, Glasses, MemoryStick, Microchip, Pickaxe, Pill, Plane, Rocket, Shield, UtilityPole,
   type LucideIcon,
 } from "lucide-react";
@@ -24,7 +24,7 @@ const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
 const X_URL = "https://x.com/linsizhen";
 
 const ICONS: Record<NavIcon, LucideIcon> = {
-  Home, Swords, Activity, Radar, Thermometer, LayoutGrid, CandlestickChart, FlaskConical, ListFilter, Star, Wallet, CalendarDays, Bell, Library, FileText, NotebookPen, Settings,
+  Home, Swords, Activity, Radar, RadioTower, Thermometer, LayoutGrid, CandlestickChart, FlaskConical, ListFilter, Star, Wallet, CalendarDays, Bell, Library, FileText, NotebookPen, Settings,
   Bot, Cpu, MemoryStick, Cable, CircuitBoard, Microchip, BatteryFull, Plane, Car, Pill,
   UtilityPole, Shield, Atom, Rocket, Dna, Pickaxe, BrainCircuit, Glasses, BatteryCharging, Database,
 };
@@ -309,13 +309,13 @@ export function Layout() {
           </header>
           <UpdateBanner />
           <main ref={mainRef} id="workspace-main" tabIndex={-1} className="min-h-0 flex-1 overflow-auto">
-            <div className="workspace-content" aria-busy={navigation.state !== "idle"}>
+            <div className={cn("workspace-content", pathname === "/realtime" && "workspace-content-realtime")} aria-busy={navigation.state !== "idle"}>
               {navigation.state !== "idle" && <p role="status" className="mb-3 text-sm text-muted-foreground">正在打开页面…</p>}
               <Outlet />
             </div>
           </main>
         </div>
-        <div inert={mobile && mobileOpen}>{pathname !== "/" && <FinanceAiDock />}</div>
+        <div inert={mobile && mobileOpen}>{pathname !== "/" && pathname !== "/realtime" && <FinanceAiDock />}</div>
       </div>
     </AiPageProvider>
   );

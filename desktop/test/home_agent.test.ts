@@ -1,3 +1,4 @@
+import { matchPath } from "react-router-dom";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -34,7 +35,8 @@ test("首页保留工作流入口，聊天已开放实际联网与取数能力",
   }
   for (const feature of features) {
     const path = feature.to.split("?")[0]!;
-    assert.ok(router.includes(`path: "${path}"`), feature.to);
+    const routes = [...router.matchAll(/path: "([^"]+)"/g)].map((m) => m[1]!);
+    assert.ok(routes.some((route) => matchPath({ path: route, end: true }, path)), feature.to);
     assert.ok(navPageOf(path), `${feature.to} 在侧栏里找不到所属栏目`);
   }
   const home = readFileSync(new URL("../src/verticals/finance/pages/Home.tsx", import.meta.url), "utf8");

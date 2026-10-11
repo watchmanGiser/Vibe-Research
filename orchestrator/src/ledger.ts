@@ -453,7 +453,11 @@ export function insertRecords(dataRoot: string, kind: string, inputs: readonly R
   if (!rests.length) return [];
   return withLock(file, () => {
     const data = loadFile(file, kind);
-    const base = Date.now();
+    const latest = data.records.reduce((at, record) => {
+      const timestamp = Date.parse(record.created_at);
+      return Number.isFinite(timestamp) ? Math.max(at, timestamp) : at;
+    }, 0);
+    const base = Math.max(Date.now(), latest + 1);
     const taken = new Set(data.records.map((r) => r.id));
     const added = rests.map((rest, i) => {
       let fresh = newId(kind);

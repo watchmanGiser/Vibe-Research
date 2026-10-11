@@ -18,6 +18,7 @@ export const router = createBrowserRouter([
     hydrateFallbackElement: <p role="status" className="p-6 text-sm text-muted-foreground">正在打开研究工作台…</p>,
     children: [
       { path: "/", element: <Home /> },
+      { path: "/realtime", lazy: async () => ({ Component: (await import("@/pages/Realtime")).Realtime }) },
       { path: "/daily-review", lazy: async () => ({ Component: (await import("@/pages/DailyReview")).DailyReview }) },
       { path: "/intel", lazy: async () => ({ Component: (await import("@/pages/Intel")).Intel }) },
       { path: "/intel/:tab", lazy: async () => ({ Component: (await import("@/pages/Intel")).Intel }) },
@@ -42,4 +43,4 @@ export const router = createBrowserRouter([
       { path: "/portfolio", element: <Moved to="/my-stocks" tab="hold" /> },
     ],
   },
-]);
+], { basename: import.meta.env.BASE_URL });

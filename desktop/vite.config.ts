@@ -36,11 +36,13 @@ function apiToken(): string {
   return "";
 }
 
+const basePath = process.env.VITE_BASE_PATH ?? "/";
+const apiPrefix = `${basePath.replace(/\/$/, "")}/api`;
 const apiProxy: Record<string, ProxyOptions> = {
-  "/api": {
+  [apiPrefix]: {
     target: "http://127.0.0.1:8765",
     changeOrigin: false,
-    rewrite: (p) => p.replace(/^\/api/, ""),
+    rewrite: (p) => p.slice(apiPrefix.length),
     configure(proxy) {
       proxy.on("proxyReq", (proxyReq) => {
         // LAN / 远程请求已经通过前置同源检查，此处才归一化为后端认可的回环 Origin。
@@ -66,6 +68,7 @@ const apiProxy: Record<string, ProxyOptions> = {
 };
 
 export default defineConfig({
+  base: basePath,
   plugins: [react(), {
     name: "vra-remote-access",
     // 直接在钩子里 use 的中间件排在 Vite 自己的静态文件与代理之前：没过口令什么都拿不到。

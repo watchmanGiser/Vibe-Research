@@ -10,6 +10,7 @@
  */
 import fs from "node:fs";
 import { productVersion } from "./version.ts";
+import { ApiExtensionError, readOnlyEndpoint } from "./api_extensions.ts";
 import http from "node:http";
 import { cancelResearch, confirmChatResearch } from "./service.ts";
 import path from "node:path";
@@ -194,6 +195,9 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       const parts = url.pathname.split("/").filter(Boolean);
       const q = Object.fromEntries(url.searchParams.entries());
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
+      const extension = req.method === "GET" ? readOnlyEndpoint(url.pathname) : undefined;
+      if (extension) return send(res, 200, await extension(url.searchParams));
+
       // 设置页要看的有效配置。**只读** —— 不提供任何写入密钥的入口(见 service.productInfo)
       if (req.method === "GET" && url.pathname === "/product") return send(res, 200, productInfo(ctx));
       // 新版提示:GET 到点了才去 GitHub 查(每天一次,没查成隔一小时再试,5 秒超时);POST {action: disable|enable|skip|check, version?}
@@ -427,6 +431,7 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       }
       return send(res, 404, { error: "not found" });
     } catch (e) {
+      if (e instanceof ApiExtensionError) return send(res, e.status, { error: redact(e.message, 200) });
       if (e instanceof URIError) return send(res, 400, { error: "bad_path", message: "网址编码无效，请从栏目入口重新打开" });
       if (e instanceof ServiceError) {
         // 🔴 请求体过大要回 **413**,不能混在 400 里。
