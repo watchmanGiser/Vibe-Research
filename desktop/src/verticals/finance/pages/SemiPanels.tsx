@@ -131,7 +131,7 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
   );
 }
 
-export function DingTalkGroupPanel() {
+export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolean } = {}) {
   const [data, setData] = useState<DingTalkOpinionFeed | null>(null);
   const [messages, setMessages] = useState<DingTalkMessageFeed | null>(null);
   const [loading, setLoading] = useState(true);
@@ -144,6 +144,8 @@ export function DingTalkGroupPanel() {
   const [offset, setOffset] = useState(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const pageSize = 30;
+  const panelClass = cn("flex min-w-0 flex-col rounded-xl border border-border/70 bg-background/20 lg:min-h-[420px]",
+    standalone ? "lg:h-[calc(100dvh-220px)]" : "lg:h-[calc(100dvh-370px)]");
 
   useEffect(() => {
     const timer = window.setTimeout(() => { setQuery(search.trim()); setOffset(0); }, 300);
@@ -189,7 +191,7 @@ export function DingTalkGroupPanel() {
         </button>
       </div>
       <div className="grid min-w-0 gap-5 lg:grid-cols-2">
-        <section aria-label="原始消息" className="flex min-w-0 flex-col rounded-xl border border-border/70 bg-background/20 lg:h-[calc(100dvh-370px)] lg:min-h-[420px]">
+        <section aria-label="原始消息" className={panelClass}>
           <div className="border-b border-border/60 p-4">
             <div className="mb-1 flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /><h3 className="font-semibold">原始消息</h3><span className="ml-auto text-[11px] text-muted-foreground">全文保留 · 去重展示</span></div>
             <p className="mb-3 text-[11px] text-muted-foreground">最近同步 {synced}</p>
@@ -218,7 +220,7 @@ export function DingTalkGroupPanel() {
             </div>
           </div>
         </section>
-        <section aria-label="观点总结" className="flex min-w-0 flex-col rounded-xl border border-border/70 bg-background/20 lg:h-[calc(100dvh-370px)] lg:min-h-[420px]">
+        <section aria-label="观点总结" className={panelClass}>
           <div className="border-b border-border/60 p-4">
             <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">观点总结</h3><span className="ml-auto text-[11px] text-muted-foreground">Nova 本地 GPT 整理</span></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>

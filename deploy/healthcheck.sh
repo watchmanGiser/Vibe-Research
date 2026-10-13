@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 base = (sys.argv[1] if len(sys.argv) > 1 else "https://soufly.cn/vibe-research").rstrip("/")
@@ -17,7 +18,7 @@ if expected and not re.fullmatch(r"[a-f0-9]{40}", expected):
 
 def request(path):
     try:
-        with urllib.request.urlopen(base + path, timeout=5) as response:
+        with urllib.request.urlopen(path if path.startswith(("https://", "http://")) else base + path, timeout=5) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, b""
@@ -54,6 +55,13 @@ app = pathlib.Path("/opt/vibe-research/app")
 html = (app / "desktop/dist/index.html").read_text()
 if "/vibe-research/assets/" not in html:
     raise SystemExit("健康检查失败：前端资源子路径错误")
+standalone = app / "desktop/dist/dingtalk.html"
+if not standalone.is_file() or 'data-page="dingtalk-standalone"' not in standalone.read_text():
+    raise SystemExit("健康检查失败：独立情报页产物缺失")
+origin = urllib.parse.urlsplit(base)
+status, standalone_page = request(urllib.parse.urlunsplit((origin.scheme, origin.netloc, "/dingtalk/", "", "")))
+if status != 200 or b'data-page="dingtalk-standalone"' not in standalone_page:
+    raise SystemExit("健康检查失败：独立情报页不可用")
 if expected:
     release = json.loads((app / "release.json").read_text())
     pid = subprocess.check_output(["systemctl", "show", "vibe-research.service", "-p", "MainPID", "--value"], text=True).strip()
@@ -63,5 +71,5 @@ if expected:
     version = json.loads((app / "orchestrator/package.json").read_text())["version"]
     if health.get("version") != version:
         raise SystemExit("健康检查失败：API 版本不匹配")
-print("健康检查通过：" + json.dumps({"ok": True, "version": health.get("version"), "private_routes": "authenticated", "public_dingtalk": "available"}, ensure_ascii=False))
+print("健康检查通过：" + json.dumps({"ok": True, "version": health.get("version"), "private_routes": "authenticated", "public_dingtalk": "available", "standalone_dingtalk": "available"}, ensure_ascii=False))
 PY

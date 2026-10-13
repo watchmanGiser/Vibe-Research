@@ -53,6 +53,10 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 
 ## 击球区原文与观点总结
 
+独立入口为 `https://soufly.cn/dingtalk/`，单独展示完整原文与总结，免登录并适配手机。
+它通过 `desktop/dingtalk.html` 独立启动，复用相同消息组件和公开只读接口；
+工作台原入口 `/vibe-research/intel/dingtalk` 继续可用，两处读取同一份持久化消息与总结。
+
 页面「资讯雷达 → 击球区观点」分列展示完整去重原文和现有总结，窄屏上下排列。
 原文支持全历史全文搜索、分页和展开全文；总结保留主题、概述、要点及风险，并可定位对应原文。
 用户于 2026-10-13 指定钉钉页免登录访问：`/intel/dingtalk` 及其前端静态资源公开，
