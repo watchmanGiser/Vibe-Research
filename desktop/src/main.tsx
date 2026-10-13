@@ -4,9 +4,10 @@ import { RouterProvider } from "react-router-dom";
 
 import "./index.css";
 import { router } from "./verticals/finance/router";
+import { createPublicDingTalkRouter } from "./verticals/finance/publicRouter";
 import { hydrateNotes } from "./verticals/finance/lib/notes";
 import { hydrateWatch } from "./verticals/finance/lib/watchlist";
-import { isPublicDingTalkPage, prepareFinancePage } from "./verticals/finance/lib/publicIntelPage";
+import { prepareFinancePage } from "./verticals/finance/lib/publicIntelPage";
 
 /**
  * **组装根**:唯一一处把垂类接进外壳的地方。
@@ -58,23 +59,9 @@ function fatal(message: string, detail: string) {
 
 prepareFinancePage(window.location.pathname, import.meta.env.BASE_URL, hydrateNotes, hydrateWatch)
   .then((publicMode) => {
-    const app = createRoot(root);
-    if (publicMode) {
-      window.addEventListener("pageshow", (event) => {
-        if (event.persisted) window.location.reload();
-      });
-      let leaving = false;
-      // 离开公开页时重新进入个人页面的完整初始化，避免空缓存冒充个人资料。
-      router.subscribe((state) => {
-        if (leaving || isPublicDingTalkPage(state.location.pathname, import.meta.env.BASE_URL)) return;
-        leaving = true;
-        app.unmount();
-        window.location.assign(state.location.pathname + state.location.search + state.location.hash);
-      });
-    }
-    app.render(
+    createRoot(root).render(
       <StrictMode>
-        <RouterProvider router={router} />
+        <RouterProvider router={publicMode ? createPublicDingTalkRouter() : router} />
       </StrictMode>,
     );
   })
