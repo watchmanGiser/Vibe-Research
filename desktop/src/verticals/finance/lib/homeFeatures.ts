@@ -11,7 +11,7 @@ export const HOME_FEATURE_GROUPS = [
   ] },
   { title: "产业资讯", detail: "产业正在发生什么", features: [
     { to: "/intel", title: "资讯雷达", detail: "聚合新闻、公告与事件线索" },
-    { to: "/intel/semi", title: "Semi动态", detail: "跟踪动态及中文整理" },
+    { to: "/intel/semi", title: "X平台帐号跟踪", detail: "跟踪动态及中文整理" },
     { to: "/intel/jianfang", title: "简放", detail: "跟踪交易者简放的公开微博与长文" },
     { to: "/intel/dingtalk", title: "击球区观点", detail: "第三方调研纪要与观点摘要" },
     { to: "/signals", title: "产业信号", detail: "跟踪上下游的变化线索" },

@@ -22,7 +22,7 @@ import { JianfangPanel } from "./JianfangPanel";
 
 // 顺序即侧栏子栏目顺序（Layout 的 INTEL_LINKS 与此一致）
 const TABS = [
-  { key: "semi", label: "Semi动态", icon: Rss, integrated: true, desc: "Semi 跟踪动态与中文整理" },
+  { key: "semi", label: "X平台帐号跟踪", icon: Rss, integrated: true, desc: "X平台帐号动态与中文整理" },
   { key: "jianfang", label: "简放", icon: Lightbulb, integrated: true, desc: "交易者简放的公开微博、长文与转发内容" },
   { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文与第三方观点总结，待独立核验" },
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
