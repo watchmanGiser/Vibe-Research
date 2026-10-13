@@ -121,7 +121,7 @@ function DingTalkOriginalImage({ url, sender, index }: { url: string; sender: st
   return (
     <a href={url} target="_blank" rel="noopener noreferrer" className="block min-w-0" title="点击查看原图">
       <img src={url} alt={`${sender} 的原文配图 ${index + 1}`} loading="lazy" decoding="async" referrerPolicy="no-referrer"
-        className="max-h-96 w-full rounded-lg border border-border/50 bg-muted/10 object-contain" onError={() => setFailed(true)} />
+        className="h-auto max-h-none w-full rounded-lg border border-border/50 bg-muted/10 object-contain md:max-h-96" onError={() => setFailed(true)} />
       <span className="mt-1 block text-center text-[11px] text-muted-foreground">点击查看原图</span>
     </a>
   );
@@ -132,16 +132,16 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
   const content = dingTalkContent(item.text, item.images);
   const long = content.text.length > 600;
   return (
-    <article className="rounded-xl border border-border/60 bg-background/40 p-4" data-message-id={item.id}>
+    <article className="border-b border-border/60 bg-background/40 px-3 py-4 md:rounded-xl md:border md:p-4" data-message-id={item.id}>
       <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         <span className="font-medium text-primary">{item.sender}</span>
         <time>{formatDingTalkTime(item.time)}</time>
         {item.duplicateCount > 0 && <span className="rounded-full bg-muted px-2 py-0.5" title={item.latestDuplicateTime ? `最近重复：${formatDingTalkTime(item.latestDuplicateTime)}` : undefined}>已合并 {item.duplicateCount} 条重复</span>}
       </div>
-      {content.text && <p className={cn("whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]", long && !expanded && "line-clamp-6")}>{content.text}</p>}
+      {content.text && <p className={cn("whitespace-pre-wrap break-words text-base leading-7 [overflow-wrap:anywhere] md:text-sm md:leading-6", long && !expanded && "line-clamp-6")}>{content.text}</p>}
       {long && <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}
         className="mt-3 rounded-md px-1 py-1 text-xs font-medium text-primary hover:bg-primary/10">{expanded ? "收起全文" : `展开全文（${content.text.length.toLocaleString("zh-CN")} 字）`}</button>}
-      {content.images.length > 0 && <div className={cn("mt-3 grid items-start gap-3", content.images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+      {content.images.length > 0 && <div className={cn("mt-3 grid items-start gap-3", content.images.length > 1 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {content.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={item.sender} index={index} />)}
       </div>}
     </article>
@@ -160,7 +160,7 @@ export function DingTalkGroupPanel() {
   const [selectedId, setSelectedId] = useState("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const originalList = useRef<HTMLDivElement>(null);
-  const panelClass = "min-w-0 rounded-xl border border-border/70 bg-background/20";
+  const panelClass = "min-w-0 border-y border-border/70 bg-background/20 md:rounded-xl md:border";
 
   useEffect(() => {
     const timer = window.setTimeout(() => { setQuery(search.trim()); }, 300);
@@ -200,7 +200,7 @@ export function DingTalkGroupPanel() {
 
   return (
     <div>
-      <div className="mb-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className="mb-3 flex flex-wrap items-center gap-2 px-3 text-xs text-muted-foreground md:mb-5 md:px-0">
         <span className="rounded-full bg-primary/10 px-3 py-1 text-primary">原始消息 {messages?.total ?? "—"} 条</span>
         <span className="rounded-full bg-muted px-3 py-1">已合并重复 {messages?.duplicateCount ?? data?.duplicateCount ?? "—"} 条</span>
         <span className="rounded-full bg-muted px-3 py-1">观点总结 {data?.opinions.length ?? "—"} 篇</span>
@@ -209,50 +209,50 @@ export function DingTalkGroupPanel() {
           <RefreshCw className={cn("h-3.5 w-3.5", (loading || messageLoading) && "animate-spin")} /> 刷新展示
         </button>
       </div>
-      <div className="grid min-w-0 items-start gap-5 lg:grid-cols-2">
+      <div className="grid min-w-0 items-start gap-4 md:gap-5 lg:grid-cols-2">
         <section aria-label="原始消息" className={panelClass}>
-          <div className="border-b border-border/60 p-4">
+          <div className="border-b border-border/60 px-3 py-4 md:p-4">
             <div className="mb-1 flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /><h3 className="font-semibold">原始消息</h3><span className="ml-auto text-[11px] text-muted-foreground">全文保留 · 去重展示</span></div>
             <p className="mb-3 text-[11px] text-muted-foreground">最近同步 {synced}</p>
             <form onSubmit={event => { event.preventDefault(); setQuery(search.trim()); }} className="flex items-center gap-2 rounded-lg border border-border bg-background/50 px-3 py-2">
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={search} onChange={event => { setSearch(event.target.value); setSelectedId(""); }} aria-label="搜索原始消息" placeholder="搜索全部历史原文或发送者…"
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60" />
+                className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground/60 md:text-sm" />
               {(search || selectedId) && <button type="button" onClick={clearFilters} className="shrink-0 text-xs text-primary">清除</button>}
             </form>
             {selectedId && <div className="mt-2 flex items-center justify-between gap-2 text-xs"><span className="text-primary">正在查看总结对应的原文</span><button type="button" onClick={clearFilters} className="text-muted-foreground hover:text-primary">返回全部消息</button></div>}
             {query && !messageLoading && <p className="mt-2 text-xs text-muted-foreground">全文搜索结果：{messages?.filteredTotal ?? 0} 条</p>}
           </div>
-          <div ref={originalList} key={`${query}:${selectedId}`} className="space-y-3 p-3" aria-label="原文列表">
+          <div ref={originalList} key={`${query}:${selectedId}`} className="space-y-0 p-0 md:space-y-3 md:p-3" aria-label="原文列表">
             {messageErr ? <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{messageErr}</div>
             : messageLoading ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取完整原文…</p>
             : !messages?.messages.length ? <p className="py-10 text-center text-sm text-muted-foreground">{query || selectedId ? "没有匹配的原始消息。" : "暂无已同步的原始消息。"}</p>
             : messages.messages.map(item => <DingTalkMessageCard key={item.id} item={item} defaultExpanded={Boolean(selectedId)} />)}
           </div>
-          <div className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
+          <div className="border-t border-border/60 px-3 py-3 text-xs text-muted-foreground md:px-4">
             {messageLoading ? "正在读取全部原文…" : messageErr ? "原文读取暂不可用" : `${query || selectedId ? "匹配" : "共"} ${messages?.filteredTotal ?? 0} 条 · 已全部显示`}
           </div>
         </section>
         <section aria-label="观点总结" className={panelClass}>
-          <div className="border-b border-border/60 p-4">
+          <div className="border-b border-border/60 px-3 py-4 md:p-4">
             <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">观点总结</h3><span className="ml-auto text-[11px] text-muted-foreground">Nova 本地 GPT 整理</span></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">保留现有主题、概述、主要观点与待核验风险。</p>
           </div>
-          <div className="p-4" aria-label="总结列表">
+          <div className="px-3 py-4 [overflow-wrap:anywhere] md:p-4" aria-label="总结列表">
             {err && <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{err}<p className="mt-1 text-xs">摘要暂不可用；不能据此判断没有新观点。</p></div>}
             {loading && !data ? <p className="py-10 text-sm text-muted-foreground">正在读取观点摘要…</p>
             : !data?.opinions.length && !err ? <p className="py-10 text-center text-sm text-muted-foreground">暂无已整理的长篇观点。</p>
             : <div className="divide-y divide-border/40">{data?.opinions.map(item => <article key={item.id} className="py-4 first:pt-0 last:pb-0">
                 <div className="mb-2 text-[11px] text-muted-foreground">资料时间 {formatDingTalkTime(item.time)} · 第三方观点，待独立核验</div>
                 <h3 className="mb-2 text-base font-semibold">{item.title}</h3>
-                <p className="mb-2 whitespace-pre-wrap break-words text-sm leading-6">{item.summary}</p>
-                <ul className="list-disc pl-5 text-sm leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
+                <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6">{item.summary}</p>
+                <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
                 {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">风险 / 待核验：{item.caveats.join("；")}</div>}
                 <button type="button" onClick={() => showOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />查看对应原文</button>
               </article>)}</div>}
           </div>
-          <div className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">当前保留 {data?.opinions.length ?? 0} 篇总结 · 可点击总结查看对应原文</div>
+          <div className="border-t border-border/60 px-3 py-3 text-xs text-muted-foreground md:px-4">当前保留 {data?.opinions.length ?? 0} 篇总结 · 可点击总结查看对应原文</div>
         </section>
       </div>
     </div>

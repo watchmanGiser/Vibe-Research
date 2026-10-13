@@ -466,10 +466,11 @@ export function Intel() {
   });
 
   return (
-    <div>
-      <PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />
+    <div className={cur.key === "dingtalk" ? "-mx-4 md:mx-0" : undefined}>
+      {cur.key === "dingtalk" ? <div className="px-3 md:px-0"><PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" /></div>
+        : <PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />}
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className={cn("mb-4 flex flex-wrap gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
         {TABS.map(({ key, label, icon: Icon, integrated }) => (
           <button key={key} onClick={() => navigate(`/intel/${key}`)}
             className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors",
@@ -480,8 +481,8 @@ export function Intel() {
         ))}
       </div>
 
-      <GlassCard glow>
-        <div className="mb-3 flex items-center gap-2">
+      <GlassCard glow className={cur.key === "dingtalk" ? "rounded-none border-0 p-0 md:rounded-lg md:border md:p-4" : undefined}>
+        <div className={cn("mb-3 flex items-center gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
           <cur.icon className="h-5 w-5 text-primary" />
           <h3 className="font-semibold">{cur.label}</h3>
           {/* ⚠️ 徽章上印的是**源名**,不是"已接入" —— 别的 tab 接入了别的源,不能共用这一个标签 */}
@@ -509,7 +510,7 @@ export function Intel() {
         )}
       </GlassCard>
 
-      <p className="mt-3 text-[11px] text-muted-foreground/60">
+      <p className={cn("mt-3 text-[11px] text-muted-foreground/60", cur.key === "dingtalk" && "px-3 md:px-0")}>
         {cur.key === "jianfang" ? "本页记录交易者简放公开微博原文与转发内容，属于作者个人观点，待独立核验；不构成投资建议。" : cur.key === "dingtalk" ? "本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。" : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
       </p>
       <Disclaimer />

@@ -12,8 +12,8 @@ export function DingTalkStandalone() {
     storageSet("vra-theme", theme);
   }, [theme]);
   return (
-    <main aria-label="击球区 消息" className="mx-auto min-h-screen max-w-[1920px] px-3 py-4 sm:px-6 sm:py-5">
-      <header className="mb-5 flex items-center justify-between gap-4">
+    <main aria-label="击球区 消息" className="mx-auto min-h-screen max-w-[1920px] px-0 py-4 md:px-6 md:py-5">
+      <header className="mb-4 flex items-center justify-between gap-4 px-3 md:mb-5 md:px-0">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10"><Lightbulb className="h-6 w-6 text-primary" /></span>
           <div className="min-w-0">
@@ -26,8 +26,8 @@ export function DingTalkStandalone() {
           {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}<span className="hidden sm:inline">{theme === "dark" ? "浅色" : "深色"}</span>
         </button>
       </header>
-      <GlassCard><DingTalkGroupPanel /></GlassCard>
-      <p className="mt-3 text-[11px] leading-5 text-muted-foreground/70">本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。</p>
+      <GlassCard className="rounded-none border-0 p-0 md:rounded-lg md:border md:p-4"><DingTalkGroupPanel /></GlassCard>
+      <p className="mt-3 px-3 text-[11px] leading-5 md:px-0 text-muted-foreground/70">本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。</p>
     </main>
   );
 }
