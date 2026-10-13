@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AlertCircle, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -172,6 +172,10 @@ export function DingTalkGroupPanel() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [mobileView, setMobileView] = useState<"messages" | "summary">("messages");
+  const viewId = useId();
+  const messagesId = `${viewId}-messages`;
+  const summaryId = `${viewId}-summary`;
   const originalList = useRef<HTMLDivElement>(null);
   const panelClass = "min-w-0 border-y border-border/70 bg-background/20 md:rounded-xl md:border";
 
@@ -201,14 +205,14 @@ export function DingTalkGroupPanel() {
   }, [query, selectedId, refreshVersion]);
 
   useEffect(() => {
-    if (selectedId && !messageLoading && messages?.messages.length) {
+    if (selectedId && mobileView === "messages" && !messageLoading && messages?.messages.length) {
       originalList.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [selectedId, messageLoading, messages]);
+  }, [selectedId, messageLoading, messages, mobileView]);
 
   const synced = messages?.syncedAt ? formatDingTalkTime(messages.syncedAt) : "尚未同步";
   const summaryTime = data?.syncedAt ? formatDingTalkTime(data.syncedAt) : "尚未整理";
-  const showOriginal = (id: string) => { setSearch(""); setQuery(""); setSelectedId(id); };
+  const showOriginal = (id: string) => { setMobileView("messages"); setSearch(""); setQuery(""); setSelectedId(id); };
   const clearFilters = () => { setSearch(""); setQuery(""); setSelectedId(""); };
 
   return (
@@ -222,8 +226,18 @@ export function DingTalkGroupPanel() {
           <RefreshCw className={cn("h-3.5 w-3.5", (loading || messageLoading) && "animate-spin")} /> 刷新展示
         </button>
       </div>
+      <div className="mx-3 mb-3 grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/30 p-1 md:hidden" role="group" aria-label="切换信息视图">
+        <button type="button" aria-pressed={mobileView === "messages"} aria-controls={messagesId} onClick={() => setMobileView("messages")}
+          className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium", mobileView === "messages" ? "border-primary/30 bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-muted/50")}>
+          <FileText className="h-4 w-4" />原始信息
+        </button>
+        <button type="button" aria-pressed={mobileView === "summary"} aria-controls={summaryId} onClick={() => setMobileView("summary")}
+          className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium", mobileView === "summary" ? "border-primary/30 bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-muted/50")}>
+          <Lightbulb className="h-4 w-4" />整理信息
+        </button>
+      </div>
       <div className="grid min-w-0 items-start gap-4 md:gap-5 lg:grid-cols-2">
-        <section aria-label="原始消息" className={panelClass}>
+        <section id={messagesId} aria-label="原始消息" className={cn(panelClass, mobileView !== "messages" && "hidden md:block")}>
           <div className="border-b border-border/60 px-3 py-4 md:p-4">
             <div className="mb-1 flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /><h3 className="font-semibold">原始消息</h3><span className="ml-auto text-[11px] text-muted-foreground">全文保留 · 去重展示</span></div>
             <p className="mb-3 text-[11px] text-muted-foreground">最近同步 {synced}</p>
@@ -246,7 +260,7 @@ export function DingTalkGroupPanel() {
             {messageLoading ? "正在读取全部原文…" : messageErr ? "原文读取暂不可用" : `${query || selectedId ? "匹配" : "共"} ${messages?.filteredTotal ?? 0} 条 · 已全部显示`}
           </div>
         </section>
-        <section aria-label="观点总结" className={panelClass}>
+        <section id={summaryId} aria-label="观点总结" className={cn(panelClass, mobileView !== "summary" && "hidden md:block")}>
           <div className="border-b border-border/60 px-3 py-4 md:p-4">
             <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">观点总结</h3><span className="ml-auto text-[11px] text-muted-foreground">Nova 本地 GPT 整理</span></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>

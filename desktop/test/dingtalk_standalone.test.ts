@@ -35,3 +35,15 @@ test('消息页使用独立主题偏好，旧版失效设置不影响默认白�
     else Reflect.deleteProperty(globalThis, 'localStorage');
   }
 });
+
+test('手机信息切换提供两个可访问按钮，首次选择原始信息，两个内容区域完整保留', async()=>{
+ await withRenderer(async r=>{
+  const {DingTalkStandalone}=await r.load('/src/verticals/finance/pages/DingTalkStandalone.tsx');
+  const html=r.html(DingTalkStandalone,{});
+  assert.match(html,/aria-label="切换信息视图"/);
+  assert.match(html,/<button[^>]*aria-pressed="true"[^>]*>[^]*?原始信息<\/button>/);
+  assert.match(html,/<button[^>]*aria-pressed="false"[^>]*>[^]*?整理信息<\/button>/);
+  assert.match(html,/aria-label="原始消息"/);assert.match(html,/aria-label="观点总结"/);
+  assert.doesNotMatch(textOf(html),/上一页|下一页/);
+ });
+});
