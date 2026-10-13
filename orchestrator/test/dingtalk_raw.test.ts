@@ -81,3 +81,25 @@ test('原文与摘要共用受鉴权保护的只读接口，彼此异常不影�
     }
   });
 });
+
+test('整页模式一次返回全部原文，超过旧限制的历史仍可搜索和定位', async () => {
+  await withSnapshot(file => {
+    const messages = Array.from({ length: 551 }, (_, i) => message(i));
+    messages[0]!.text = '完整长篇原文\n'.repeat(1500) + '原文末尾不可截断';
+    fs.writeFileSync(file, JSON.stringify(snapshot(messages)));
+    const all = fetchDingTalkMessages(new URLSearchParams({ all: '1', limit: '1', offset: '400' }));
+    assert.equal(all.messages.length, 551);
+    assert.equal(all.total, 551);
+    assert.equal(all.filteredTotal, 551);
+    assert.equal(all.hasMore, false);
+    assert.equal(all.offset, 0);
+    assert.equal(all.limit, 551);
+    assert.equal(all.messages.find(m => m.id === messages[0]!.id)!.text, messages[0]!.text);
+    const search = fetchDingTalkMessages(new URLSearchParams({ all: '1', q: '原文末尾不可截断' }));
+    assert.equal(search.messages.length, 1);
+    assert.equal(search.messages[0]!.id, messages[0]!.id);
+    const focused = fetchDingTalkMessages(new URLSearchParams({ all: '1', id: messages[0]!.id }));
+    assert.equal(focused.messages.length, 1);
+    assert.equal(focused.hasMore, false);
+  });
+});

@@ -41,7 +41,9 @@ test("🔴 Core UI 确实存在 —— 目录改名 / 搬走时,后面几条不�
 });
 
 test("🔴 只有组装根可以 import 垂类 —— 别处 import 等于绕开注册点", () => {
-  const roots = new Set(["main.tsx"]);
+  // 工作台与用户授权的独立页面都是显式 HTML 组装入口。
+  const roots = new Set(["main.tsx", "dingtalk.tsx"]);
+  assert.match(fs.readFileSync(path.join(REPO, "desktop", "dingtalk.html"), "utf8"), /src="\/src\/dingtalk\.tsx"/);
   const bad: string[] = [];
   for (const f of coreFiles()) {
     const r = rel(f);
@@ -51,7 +53,7 @@ test("🔴 只有组装根可以 import 垂类 —— 别处 import 等于绕开
       if (/verticals\//.test(m[1]!)) bad.push(`${r} → ${m[1]}`);
     }
   }
-  assert.deepEqual(bad, [], `只有 main.tsx 能接垂类:\n  ${bad.join("\n  ")}`);
+  assert.deepEqual(bad, [], `只有 main.tsx 与 dingtalk.tsx 组装入口能接垂类:\n  ${bad.join("\n  ")}`);
 });
 
 test("Core UI 里不许出现行业词(它换个行业要能原样搬走)", () => {

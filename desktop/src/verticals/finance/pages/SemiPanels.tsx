@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, ChevronLeft, ChevronRight, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 interface SemiTweet {
@@ -131,7 +131,7 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
   );
 }
 
-export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolean } = {}) {
+export function DingTalkGroupPanel() {
   const [data, setData] = useState<DingTalkOpinionFeed | null>(null);
   const [messages, setMessages] = useState<DingTalkMessageFeed | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,21 +141,19 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [offset, setOffset] = useState(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const pageSize = 30;
-  const panelClass = cn("flex min-w-0 flex-col rounded-xl border border-border/70 bg-background/20 lg:min-h-[420px]",
-    standalone ? "lg:h-[calc(100dvh-220px)]" : "lg:h-[calc(100dvh-370px)]");
+  const originalList = useRef<HTMLDivElement>(null);
+  const panelClass = "min-w-0 rounded-xl border border-border/70 bg-background/20";
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { setQuery(search.trim()); setOffset(0); }, 300);
+    const timer = window.setTimeout(() => { setQuery(search.trim()); }, 300);
     return () => window.clearTimeout(timer);
   }, [search]);
 
   useEffect(() => {
     let active = true;
     setLoading(true); setErr("");
-    void api.dingtalkGroup(500).then(value => { if (active) setData(value); })
+    void api.dingtalkGroup(500, true).then(value => { if (active) setData(value); })
       .catch(error => { if (active) setErr(error instanceof Error ? error.message : String(error)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -164,20 +162,24 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
   useEffect(() => {
     let active = true;
     setMessageLoading(true); setMessageErr("");
-    void api.dingtalkMessages({ limit: pageSize, offset, q: query, id: selectedId }).then(value => {
+    void api.dingtalkMessages({ all: true, q: query, id: selectedId }).then(value => {
       if (active) setMessages(value);
     }).catch(error => {
       if (active) { setMessages(null); setMessageErr(error instanceof Error ? error.message : String(error)); }
     }).finally(() => { if (active) setMessageLoading(false); });
     return () => { active = false; };
-  }, [offset, query, selectedId, refreshVersion]);
+  }, [query, selectedId, refreshVersion]);
+
+  useEffect(() => {
+    if (selectedId && !messageLoading && messages?.messages.length) {
+      originalList.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [selectedId, messageLoading, messages]);
 
   const synced = messages?.syncedAt ? formatDingTalkTime(messages.syncedAt) : "尚未同步";
   const summaryTime = data?.syncedAt ? formatDingTalkTime(data.syncedAt) : "尚未整理";
-  const page = Math.floor(offset / pageSize) + 1;
-  const pages = Math.max(1, Math.ceil((messages?.filteredTotal ?? 0) / pageSize));
-  const showOriginal = (id: string) => { setSearch(""); setQuery(""); setOffset(0); setSelectedId(id); };
-  const clearFilters = () => { setSearch(""); setQuery(""); setOffset(0); setSelectedId(""); };
+  const showOriginal = (id: string) => { setSearch(""); setQuery(""); setSelectedId(id); };
+  const clearFilters = () => { setSearch(""); setQuery(""); setSelectedId(""); };
 
   return (
     <div>
@@ -190,12 +192,12 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
           <RefreshCw className={cn("h-3.5 w-3.5", (loading || messageLoading) && "animate-spin")} /> 刷新展示
         </button>
       </div>
-      <div className="grid min-w-0 gap-5 lg:grid-cols-2">
+      <div className="grid min-w-0 items-start gap-5 lg:grid-cols-2">
         <section aria-label="原始消息" className={panelClass}>
           <div className="border-b border-border/60 p-4">
             <div className="mb-1 flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /><h3 className="font-semibold">原始消息</h3><span className="ml-auto text-[11px] text-muted-foreground">全文保留 · 去重展示</span></div>
             <p className="mb-3 text-[11px] text-muted-foreground">最近同步 {synced}</p>
-            <form onSubmit={event => { event.preventDefault(); setQuery(search.trim()); setOffset(0); }} className="flex items-center gap-2 rounded-lg border border-border bg-background/50 px-3 py-2">
+            <form onSubmit={event => { event.preventDefault(); setQuery(search.trim()); }} className="flex items-center gap-2 rounded-lg border border-border bg-background/50 px-3 py-2">
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={search} onChange={event => { setSearch(event.target.value); setSelectedId(""); }} aria-label="搜索原始消息" placeholder="搜索全部历史原文或发送者…"
                 className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60" />
@@ -204,20 +206,14 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
             {selectedId && <div className="mt-2 flex items-center justify-between gap-2 text-xs"><span className="text-primary">正在查看总结对应的原文</span><button type="button" onClick={clearFilters} className="text-muted-foreground hover:text-primary">返回全部消息</button></div>}
             {query && !messageLoading && <p className="mt-2 text-xs text-muted-foreground">全文搜索结果：{messages?.filteredTotal ?? 0} 条</p>}
           </div>
-          <div key={`${offset}:${query}:${selectedId}`} className="min-h-[300px] max-h-[65vh] flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 lg:min-h-0 lg:max-h-none" tabIndex={0} aria-label="原文列表">
+          <div ref={originalList} key={`${query}:${selectedId}`} className="space-y-3 p-3" aria-label="原文列表">
             {messageErr ? <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{messageErr}</div>
             : messageLoading ? <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />正在读取完整原文…</p>
             : !messages?.messages.length ? <p className="py-10 text-center text-sm text-muted-foreground">{query || selectedId ? "没有匹配的原始消息。" : "暂无已同步的原始消息。"}</p>
             : messages.messages.map(item => <DingTalkMessageCard key={item.id} item={item} defaultExpanded={Boolean(selectedId)} />)}
           </div>
-          <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
-            <span>{query || selectedId ? `匹配 ${messages?.filteredTotal ?? 0} 条` : `共 ${messages?.total ?? 0} 条`} · 第 {page} / {pages} 页</span>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setOffset(value => Math.max(0, value - pageSize))} disabled={offset === 0 || messageLoading}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 hover:text-primary disabled:opacity-40"><ChevronLeft className="h-3 w-3" />上一页</button>
-              <button type="button" onClick={() => setOffset(value => value + pageSize)} disabled={!messages?.hasMore || messageLoading}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 hover:text-primary disabled:opacity-40">下一页<ChevronRight className="h-3 w-3" /></button>
-            </div>
+          <div className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
+            {messageLoading ? "正在读取全部原文…" : messageErr ? "原文读取暂不可用" : `${query || selectedId ? "匹配" : "共"} ${messages?.filteredTotal ?? 0} 条 · 已全部显示`}
           </div>
         </section>
         <section aria-label="观点总结" className={panelClass}>
@@ -226,7 +222,7 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">保留现有主题、概述、主要观点与待核验风险。</p>
           </div>
-          <div className="min-h-[300px] max-h-[65vh] flex-1 overflow-y-auto overscroll-contain p-4 lg:min-h-0 lg:max-h-none" tabIndex={0} aria-label="总结列表">
+          <div className="p-4" aria-label="总结列表">
             {err && <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{err}<p className="mt-1 text-xs">摘要暂不可用；不能据此判断没有新观点。</p></div>}
             {loading && !data ? <p className="py-10 text-sm text-muted-foreground">正在读取观点摘要…</p>
             : !data?.opinions.length && !err ? <p className="py-10 text-center text-sm text-muted-foreground">暂无已整理的长篇观点。</p>
@@ -239,7 +235,7 @@ export function DingTalkGroupPanel({ standalone = false }: { standalone?: boolea
                 <button type="button" onClick={() => showOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />查看对应原文</button>
               </article>)}</div>}
           </div>
-          <div className="mt-auto border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">当前保留 {data?.opinions.length ?? 0} 篇总结 · 可点击总结查看对应原文</div>
+          <div className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">当前保留 {data?.opinions.length ?? 0} 篇总结 · 可点击总结查看对应原文</div>
         </section>
       </div>
     </div>

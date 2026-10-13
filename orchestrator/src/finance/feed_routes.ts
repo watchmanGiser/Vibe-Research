@@ -17,4 +17,4 @@ registerReadOnlyEndpoint("/semi/health", handled(() => fetchSemi("/api/health"))
 registerReadOnlyEndpoint("/semi/status", handled(() => fetchSemi("/api/status")));
 registerReadOnlyEndpoint("/semi/tweets", handled((query) => fetchSemi("/api/tweets", query)));
 registerReadOnlyEndpoint("/semi/dingtalk", handled((query) => query.get("view") === "messages"
-  ? fetchDingTalkMessages(query) : fetchDingTalkGroup(Number(query.get("limit") ?? 200))));
+  ? fetchDingTalkMessages(query) : fetchDingTalkGroup(Number(query.get("limit") ?? 200), query.get("all") === "1")));

@@ -26,7 +26,7 @@ export function DingTalkStandalone() {
           {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}<span className="hidden sm:inline">{theme === "dark" ? "浅色" : "深色"}</span>
         </button>
       </header>
-      <GlassCard><DingTalkGroupPanel standalone /></GlassCard>
+      <GlassCard><DingTalkGroupPanel /></GlassCard>
       <p className="mt-3 text-[11px] leading-5 text-muted-foreground/70">本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。</p>
     </main>
   );

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 export class DingTalkSnapshotError extends Error { readonly status = 503; }
 const exact = (o: Record<string, unknown>, keys: string[]) => Object.keys(o).sort().join(',') === keys.sort().join(',');
 const text = (x: unknown, n: number) => typeof x === 'string' && x.trim().length > 0 && x.length <= n;
-export function fetchDingTalkGroup(limit = 200) {
+export function fetchDingTalkGroup(limit = 200, all = false) {
   const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE?.trim() || '/opt/vibe-research/shared/semi/dingtalk.json';
   let v: unknown;
   try { v = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new DingTalkSnapshotError('击球区观点摘要暂不可用'); }
@@ -20,5 +20,5 @@ export function fetchDingTalkGroup(limit = 200) {
     return m as { id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] };
   });
   return { schemaVersion: 2, label: '击球区观点', syncedAt: data.syncedAt as string, duplicateCount: data.duplicateCount as number,
-    opinions: opinions.slice(0, Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 200) };
+    opinions: all ? opinions : opinions.slice(0, Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 200) };
 }

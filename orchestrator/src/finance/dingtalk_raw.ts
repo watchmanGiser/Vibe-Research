@@ -1,4 +1,4 @@
-/** 受站点鉴权保护的原文快照：完整正文、独立分页及全文检索。 */
+/** 原文快照：完整正文、全文检索与整页列表。 */
 import fs from 'node:fs';
 import { DingTalkSnapshotError } from './dingtalk_semi.ts';
 
@@ -39,6 +39,7 @@ export function fetchDingTalkMessages(query = new URLSearchParams()) {
   const filtered = messages.filter(m => (!keyword || `${m.sender}\n${m.text}`.toLocaleLowerCase('zh-CN').includes(keyword)) && (!selectedId || m.relatedIds.includes(selectedId)));
   return { schemaVersion: 1, label: data.label as string, syncedAt: data.syncedAt as string,
     duplicateCount: data.duplicateCount as number, total: messages.length, filteredTotal: filtered.length,
-    offset, limit, hasMore: offset + limit < filtered.length,
-    messages: filtered.slice(offset, offset + limit) };
+    offset: query.get('all') === '1' ? 0 : offset, limit: query.get('all') === '1' ? filtered.length : limit,
+    hasMore: query.get('all') !== '1' && offset + limit < filtered.length,
+    messages: query.get('all') === '1' ? filtered : filtered.slice(offset, offset + limit) };
 }

@@ -277,12 +277,13 @@ export const backend = {
       likes?: number; retweets?: number; replies?: number;
     }>;
   }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
-  dingtalkGroup: (limit = 200) => call<{
+  dingtalkGroup: (limit = 200, all = false) => call<{
     schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
     opinions: Array<{ id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
-  }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
-  dingtalkMessages: (options: { limit?: number; offset?: number; q?: string; id?: string } = {}) => {
+  }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}${all ? "&all=1" : ""}`),
+  dingtalkMessages: (options: { all?: boolean; limit?: number; offset?: number; q?: string; id?: string } = {}) => {
     const query = new URLSearchParams({ view: "messages", limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });
+    if (options.all) query.set("all", "1");
     if (options.q) query.set("q", options.q);
     if (options.id) query.set("id", options.id);
     return call<{

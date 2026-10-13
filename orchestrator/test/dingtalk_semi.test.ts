@@ -35,5 +35,11 @@ test('HTTP 鉴权、缺失 503 与只读摘要', async () => {
     fs.writeFileSync(file, JSON.stringify(snapshot));
     const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(r.status, 200); assert.deepEqual((await r.json()).opinions, [opinion]);
+    const opinions = Array.from({ length: 551 }, (_, i) => ({ ...opinion, id: (i + 1).toString(16).padStart(64, '0') }));
+    fs.writeFileSync(file, JSON.stringify({ ...snapshot, opinions }));
+    const complete = await fetch(url + '?all=1&limit=1', { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(complete.status, 200);
+    assert.deepEqual((await complete.json()).opinions, opinions);
+    assert.equal(fetchDingTalkGroup(500).opinions.length, 500);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(root, { recursive: true, force: true }); }
 });

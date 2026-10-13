@@ -13,5 +13,6 @@ test('独立情报页提供两栏、历史搜索和主题切换，不包含个�
     assert.match(html, /aria-label="搜索原始消息"/);
     assert.match(html, /aria-label="切换为浅色"/);
     assert.doesNotMatch(html, /产品侧栏|原产品板块导航|接入 AI|个人台账/);
+    assert.doesNotMatch(text, /上一页|下一页/);
   });
 });
