@@ -54,3 +54,22 @@ test('资源查询失败时保留已有缓存与完整正文，不伪造图片�
     assert.ok(fs.existsSync(path.join(dir, filename)));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('整理链路拿到经过校验的本地原图；离线维护不下载缺失资源', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dingtalk-image-input-'));
+  try {
+    const filename = `${hash(png)}.png`;
+    fs.writeFileSync(path.join(dir, filename), png);
+    fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ schemaVersion: 1, conversationHash: hash('image-test'), files: { [hash('@ready')]: filename } }));
+    const raw = { conversationId: 'image-test', messages: [{ messageId: 'image-source', text: '[图片消息](mediaId=@ready)\n[图片消息](mediaId=@not-cached)' }] };
+    const result = await cacheMessageImages(raw, { ...process.env, DINGTALK_CONVERSATION_ID: 'image-test', DINGTALK_MEDIA_CACHE_DIR: dir, DWS_BIN: '/bin/false' }, { download: false });
+    assert.equal(result.ready, 1);
+    assert.equal(result.downloadFailures, 0);
+    assert.equal(result.localFiles.get('@ready'), path.join(dir, filename));
+    assert.equal(result.localFiles.has('@not-cached'), false);
+    fs.unlinkSync(path.join(dir, filename));
+    fs.symlinkSync(path.join(dir, 'index.json'), path.join(dir, filename));
+    const invalid = await cacheMessageImages(raw, { ...process.env, DINGTALK_CONVERSATION_ID: 'image-test', DINGTALK_MEDIA_CACHE_DIR: dir }, { download: false });
+    assert.equal(invalid.localFiles.size, 0, '不能把链接指向的其他文件交给图片模型');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

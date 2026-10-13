@@ -29,12 +29,12 @@ const storeImage = (directory, bytes) => {
   return name;
 };
 
-export async function cacheMessageImages(raw, env = process.env) {
+export async function cacheMessageImages(raw, env = process.env, options = {}) {
   if (raw.conversationId !== env.DINGTALK_CONVERSATION_ID) throw Error('图片归档会话不匹配');
   const directory = env.DINGTALK_MEDIA_CACHE_DIR || path.join(os.homedir(), '.local/share/vibe-research/dingtalk-media');
   const sources = new Map();
   for (const message of raw.messages.flatMap(item => [item, ...(item.duplicateSources || [])])) for (const reference of messageImageReferences(message.text)) sources.set(reference, message.messageId);
-  if (!sources.size) return { directory, images: new Map(), filenames: [], total: 0, ready: 0, unavailable: 0, downloadFailures: 0 };
+  if (!sources.size) return { directory, images: new Map(), localFiles: new Map(), filenames: [], total: 0, ready: 0, unavailable: 0, downloadFailures: 0 };
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const indexFile = path.join(directory, 'index.json');
   const conversationHash = hash(raw.conversationId);
@@ -48,9 +48,11 @@ export async function cacheMessageImages(raw, env = process.env) {
     const name = files[hash(reference)];
     if (typeof name !== 'string' || !imageFilePattern.test(name)) return false;
     const file = path.join(directory, name);
-    return fs.existsSync(file) && fs.lstatSync(file).isFile() && hash(fs.readFileSync(file)) === name.split('.')[0];
+    if (!fs.existsSync(file) || !fs.lstatSync(file).isFile() || fs.statSync(file).size > maxImageBytes) return false;
+    const bytes = fs.readFileSync(file);
+    try { return hash(bytes) === name.split('.')[0] && imageExtension(bytes) === name.split('.').at(-1); } catch { return false; }
   };
-  const external = [...sources.keys()].filter(reference => !cached(reference) && reference.startsWith('https://'));
+  const external = options.download === false ? [] : [...sources.keys()].filter(reference => !cached(reference) && reference.startsWith('https://'));
   let downloadFailures = 0;
   // 当前群的公开图片源。不自动抓取任意消息网址或跟随跳转。
   const fetchExternal = async reference => {
@@ -69,7 +71,7 @@ export async function cacheMessageImages(raw, env = process.env) {
     } catch { downloadFailures++; }
   };
   for (let offset = 0; offset < external.length; offset += 4) await Promise.all(external.slice(offset, offset + 4).map(fetchExternal));
-  const opaque = [...sources.keys()].filter(reference => !cached(reference) && reference.startsWith('@'));
+  const opaque = options.download === false ? [] : [...sources.keys()].filter(reference => !cached(reference) && reference.startsWith('@'));
   const messageIds = [...new Set(opaque.map(reference => sources.get(reference)))];
   // 查询与下载同一批真实消息，沿返回的 ledger 接收资源，不拼接媒体地址。
   for (let offset = 0; offset < messageIds.length; offset += 50) {
@@ -94,6 +96,7 @@ export async function cacheMessageImages(raw, env = process.env) {
   fs.writeFileSync(indexTemp, JSON.stringify({ schemaVersion: 1, conversationHash, files }) + '\n', { mode: 0o600 });
   fs.renameSync(indexTemp, indexFile);
   const images = new Map([...sources.keys()].filter(cached).map(reference => [reference, imagePublicPath(files[hash(reference)])]));
-  return { directory, images, filenames: [...new Set([...images.values()].map(url => url.split('/').at(-1)))],
+  const localFiles = new Map([...sources.keys()].filter(cached).map(reference => [reference, path.join(directory, files[hash(reference)])]));
+  return { directory, images, localFiles, filenames: [...new Set([...images.values()].map(url => url.split('/').at(-1)))],
     total: sources.size, ready: images.size, unavailable: sources.size - images.size, downloadFailures };
 }

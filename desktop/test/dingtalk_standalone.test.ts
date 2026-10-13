@@ -9,7 +9,7 @@ test('独立情报页提供两栏、历史搜索和主题切换，不包含个�
     const text = textOf(html);
     assert.match(text, /击球区 消息/);
     assert.match(text, /原始消息/);
-    assert.match(text, /观点总结/);
+    assert.match(text, /整理信息/);
     assert.match(html, /aria-label="搜索原始消息"/);
     assert.match(html, /aria-label="切换为深色"/);
     assert.doesNotMatch(html, /产品侧栏|原产品板块导航|接入 AI|个人台账/);
@@ -43,7 +43,7 @@ test('手机信息切换提供两个可访问按钮，首次选择原始信息�
   assert.match(html,/aria-label="切换信息视图"/);
   assert.match(html,/<button[^>]*aria-pressed="true"[^>]*>[^]*?原始信息<\/button>/);
   assert.match(html,/<button[^>]*aria-pressed="false"[^>]*>[^]*?整理信息<\/button>/);
-  assert.match(html,/aria-label="原始消息"/);assert.match(html,/aria-label="观点总结"/);
+  assert.match(html,/aria-label="原始消息"/);assert.match(html,/aria-label="整理信息"/);
   assert.doesNotMatch(textOf(html),/上一页|下一页/);
  });
 });

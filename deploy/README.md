@@ -83,6 +83,10 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟
 调度精度为 1 秒；没有新增内容时跳过重复发布。
 模型提供方许可、输出白名单、摘要缓存和失败禁止覆盖规则保持生效；
 总结独立写入 `/opt/vibe-research/shared/semi/dingtalk.json`，与原文文件互不覆盖。
+图片消息从已校验的 Nova 原图缓存作为本机整理工具的图片附件输入，短图片通知也纳入整理。
+通知、公告等以 `kind=event` 记录，研究判断以 `kind=opinion` 记录；旧的无分类缓存继续兼容。
+图片内容指纹变化时重新识别；私有输入指纹不进入公开快照。每轮最多补齐 4 条图片整理，
+未处理原图继续完整保留，后续检查逐批补齐；图片识别失败不覆盖线上已有内容。
 已整理结果在 Nova `DINGTALK_LOCAL_SUMMARY_FILE` 按消息指纹缓存；
 `DINGTALK_SUMMARY_ONLY=1` 仍可本地试运行、不上传。
 

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 const script = new URL('../push-dingtalk-group.mjs', import.meta.url).pathname;
 test('原文只保留本地；模型输出白名单摘要；失败禁止上传', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-test-'));
@@ -12,7 +13,7 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     const response = path.join(dir, 'response.json'), captured = path.join(dir, 'captured.json'), calls = path.join(dir, 'calls'), key = path.join(dir, 'key');
     fs.writeFileSync(key, 'test-key');
     fs.writeFileSync(path.join(bin, 'dws'), "#!/usr/bin/env node\nprocess.stdout.write(require('node:fs').readFileSync(process.env.TEST_RESPONSE));\n", { mode: 0o700 });
-    fs.writeFileSync(path.join(bin, 'gpt'), "#!/usr/bin/env node\nconst fs=require('fs');if(process.env.TEST_GPT_FAIL)process.exit(1);fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({title:'产业调研',summary:process.env.TEST_OVERSIZE?'过长概述。'.repeat(200):'第三方表示行业需求存在变化，尚需验证。',keyPoints:['关注需求变化'],caveats:['缺少独立数据，待核验']}));fs.appendFileSync(process.env.TEST_CALLS,'gpt\\n');\n", { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'gpt'), "#!/usr/bin/env node\nconst fs=require('fs');if(process.env.TEST_GPT_FAIL)process.exit(1);fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind:'opinion',title:'产业调研',summary:process.env.TEST_OVERSIZE?'过长概述。'.repeat(200):'第三方表示行业需求存在变化，尚需验证。',keyPoints:['关注需求变化'],caveats:['缺少独立数据，待核验']}));fs.appendFileSync(process.env.TEST_CALLS,'gpt\\n');\n", { mode: 0o700 });
     fs.writeFileSync(path.join(bin, 'scp'), "#!/usr/bin/env node\nconst fs=require('fs');fs.copyFileSync(process.argv.at(-2),process.env.TEST_CAPTURED);fs.appendFileSync(process.env.TEST_CALLS,'scp\\n');\n", { mode: 0o700 });
     fs.writeFileSync(path.join(bin, 'ssh'), "#!/usr/bin/env node\nrequire('fs').appendFileSync(process.env.TEST_CALLS,'ssh\\n');\n", { mode: 0o700 });
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DWS_BIN: path.join(bin, 'dws'), DINGTALK_GPT_BIN: path.join(bin, 'gpt'), TEST_RESPONSE: response, TEST_CAPTURED: captured, TEST_CALLS: calls,
@@ -84,4 +85,57 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     result = run(); assert.notEqual(result.status, 0, '缓存带原文字段必须拒绝');
     assert.equal(fs.readFileSync(captured, 'utf8'), normalizedPublished);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('短图片通知读取真实本地附件，缓存识别结果并在图片变化时重新整理', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-image-event-'));
+  try {
+    const hash = value => createHash('sha256').update(value).digest('hex');
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const media = path.join(dir, 'media'); fs.mkdirSync(media);
+    const calls = path.join(dir, 'model-calls.jsonl'), captured = path.join(dir, 'published.json'), key = path.join(dir, 'key');
+    fs.writeFileSync(key, 'fixture-key');
+    fs.writeFileSync(path.join(bin, 'gpt'), `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);const imageIndex=args.indexOf('--image');
+if(imageIndex<0)process.exit(8);
+const images=[];for(let i=imageIndex+1;i<args.length&&!args[i].startsWith('-');i++)images.push(args[i]);
+if(!images.length||images.some(file=>!fs.statSync(file).isFile()))process.exit(9);
+if(process.env.TEST_IMAGE_MODEL_FAIL)process.exit(7);
+fs.appendFileSync(process.env.TEST_IMAGE_CALLS,JSON.stringify(images)+'\\n');
+fs.writeFileSync(args[args.indexOf('-o')+1],JSON.stringify({kind:'event',title:'材料价格调整通知',summary:'图片通知列明指定覆铜板产品调价200%，自2027年1月1日工厂出货起执行。',keyPoints:['R-1705全部规格；其余列示型号限厚度1.1毫米及以上。'],caveats:[]}));
+`, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'scp'), "#!/usr/bin/env node\nrequire('node:fs').copyFileSync(process.argv.at(-2),process.env.TEST_PUBLISHED);\n", { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'ssh'), '#!/usr/bin/env node\n', { mode: 0o700 });
+    const rawFile = path.join(dir, 'raw.json'), cacheFile = path.join(dir, 'summaries.json');
+    const original = { conversationId: 'image-test', syncedAt: '2026-10-13T13:00:00Z', duplicateCount: 0, messages: [{ messageId: 'image-notice', sender: 'test-sender', time: '2026-10-13T12:00:00Z', text: '材料调价[图片消息](mediaId=@notice)', duplicateCount: 0, duplicateMessageIds: [] }] };
+    fs.writeFileSync(rawFile, JSON.stringify(original));
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
+    const installImage = bytes => {
+      const filename = `${hash(bytes)}.png`;fs.writeFileSync(path.join(media, filename),bytes);
+      fs.writeFileSync(path.join(media,'index.json'),JSON.stringify({schemaVersion:1,conversationHash:hash('image-test'),files:{[hash('@notice')]:filename}}));return path.join(media,filename);
+    };
+    const firstImage = installImage(png);
+    fs.writeFileSync(cacheFile,JSON.stringify({entries:{[hash(original.messages[0].messageId)]:{id:hash(original.messages[0].messageId),time:original.messages[0].time,textHash:hash(original.messages[0].text),title:'旧图片消息',summary:'旧整理未读取附图。',keyPoints:['只有文字标题。'],caveats:['图片正文未能读取。']}}}));
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DINGTALK_GPT_BIN: path.join(bin,'gpt'), DWS_BIN:'/bin/false', DINGTALK_USE_ARCHIVE:'1', DINGTALK_GPT_PROVIDER_APPROVED:'1', DINGTALK_CONVERSATION_ID:'image-test', DINGTALK_PUSH_HOST:'fixture.invalid', DINGTALK_PUSH_USER:'ubuntu', DINGTALK_PUSH_SSH_KEY:key, DINGTALK_LOCAL_SNAPSHOT_FILE:rawFile, DINGTALK_LOCAL_SUMMARY_FILE:cacheFile, DINGTALK_MEDIA_CACHE_DIR:media, TEST_IMAGE_CALLS:calls, TEST_PUBLISHED:captured };
+    const run = extra => spawnSync(process.execPath,[script],{env:{...env,...extra},encoding:'utf8'});
+    let result=run();assert.equal(result.status,0,result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(calls,'utf8').trim()),[firstImage]);
+    const published=JSON.parse(fs.readFileSync(captured,'utf8'));
+    assert.equal(published.opinions.length,1,'短图片消息也必须进入整理信息');
+    assert.equal(published.opinions[0].kind,'event');
+    assert.match(published.opinions[0].summary,/200%.*2027年1月1日/);
+    assert.doesNotMatch(fs.readFileSync(captured,'utf8'),/inputHash|@notice|image-notice|media\/|原始消息|textHash/);
+    const cached=Object.values(JSON.parse(fs.readFileSync(cacheFile,'utf8')).entries)[0];
+    assert.equal(cached.textHash,hash(original.messages[0].text));
+    assert.match(cached.inputHash,/^[a-f0-9]{64}$/);
+    result=run();assert.equal(result.status,0,result.stderr);assert.equal(fs.readFileSync(calls,'utf8').trim().split('\n').length,1,'相同图片不重复调用模型');
+    installImage(Buffer.concat([png,Buffer.from('image-version-2')]));
+    result=run();assert.equal(result.status,0,result.stderr);assert.equal(fs.readFileSync(calls,'utf8').trim().split('\n').length,2,'正文未变但图片变化也要重新识别');
+    assert.equal(fs.readFileSync(rawFile,'utf8'),JSON.stringify(original),'识别不改写原始消息');
+    const beforePublish=fs.readFileSync(captured,'utf8');
+    installImage(Buffer.concat([png,Buffer.from('image-version-3')]));
+    result=run({TEST_IMAGE_MODEL_FAIL:'1'});assert.notEqual(result.status,0);assert.equal(fs.readFileSync(captured,'utf8'),beforePublish,'图片识别失败保留已发布结果');
+    result=run({DINGTALK_REPUBLISH_ONLY:'1',TEST_IMAGE_MODEL_FAIL:'1'});assert.notEqual(result.status,0,'图片已经变化时维护重发不能冒充完成了新识别');
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });

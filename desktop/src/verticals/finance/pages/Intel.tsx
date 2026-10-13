@@ -24,7 +24,7 @@ import { JianfangPanel } from "./JianfangPanel";
 const TABS = [
   { key: "semi", label: "X平台帐号跟踪", icon: Rss, integrated: true, desc: "X平台帐号动态与中文整理" },
   { key: "jianfang", label: "简放", icon: Lightbulb, integrated: true, desc: "交易者简放的公开微博、长文与转发内容" },
-  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文与第三方观点总结，待独立核验" },
+  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文、事件记录与观点整理" },
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
   { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
   { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
@@ -511,7 +511,7 @@ export function Intel() {
       </GlassCard>
 
       <p className={cn("mt-3 text-[11px] text-muted-foreground/60", cur.key === "dingtalk" && "px-3 md:px-0")}>
-        {cur.key === "jianfang" ? "本页记录交易者简放公开微博原文与转发内容，属于作者个人观点，待独立核验；不构成投资建议。" : cur.key === "dingtalk" ? "本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。" : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
+        {cur.key === "jianfang" ? "本页记录交易者简放公开微博原文与转发内容，属于作者个人观点，待独立核验；不构成投资建议。" : cur.key === "dingtalk" ? "本页保留完整去重原文，并区分事件记录与观点整理；通知事项按所附资料记录，研究判断需独立核验，不构成投资建议。" : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
       </p>
       <Disclaimer />
     </div>

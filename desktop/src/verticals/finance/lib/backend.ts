@@ -285,7 +285,7 @@ export const backend = {
   }>(`/semi/tweets?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
   dingtalkGroup: (limit = 200, all = false) => call<{
     schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
-    opinions: Array<{ id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
+    opinions: Array<{ kind?: "event" | "opinion"; id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
   }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}${all ? "&all=1" : ""}`),
   dingtalkMessages: (options: { all?: boolean; limit?: number; offset?: number; q?: string; id?: string } = {}) => {
     const query = new URLSearchParams({ view: "messages", limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });

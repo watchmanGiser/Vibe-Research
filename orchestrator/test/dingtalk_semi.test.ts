@@ -43,3 +43,18 @@ test('HTTP 鉴权、缺失 503 与只读摘要', async () => {
     assert.equal(fetchDingTalkGroup(500).opinions.length, 500);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('事件分类兼容旧观点，只允许event或opinion，禁止识别缓存进入公开接口', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-event-kind-'));
+  const prior = process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
+  try {
+    const file = process.env.DINGTALK_SEMI_SNAPSHOT_FILE = path.join(root, 'feed.json');
+    const event = { ...opinion, kind: 'event', title: '材料调价通知', summary: '图片通知列明指定产品自2027年1月1日出货起调整价格。', caveats: [] };
+    fs.writeFileSync(file, JSON.stringify({ ...snapshot, opinions: [opinion, event] }));
+    assert.deepEqual(fetchDingTalkGroup().opinions, [opinion, event]);
+    for (const invalid of [{ ...event, kind: 'verified' }, { ...event, inputHash: 'b'.repeat(64) }, { ...event, imageText: '不公开识别原文' }]) {
+      fs.writeFileSync(file, JSON.stringify({ ...snapshot, opinions: [invalid] }));
+      assert.throws(() => fetchDingTalkGroup(), DingTalkSnapshotError);
+    }
+  } finally { if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(root, { recursive: true, force: true }); }
+});
