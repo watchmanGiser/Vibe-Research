@@ -6,6 +6,7 @@ import "./index.css";
 import { router } from "./verticals/finance/router";
 import { hydrateNotes } from "./verticals/finance/lib/notes";
 import { hydrateWatch } from "./verticals/finance/lib/watchlist";
+import { isPublicDingTalkPage, prepareFinancePage } from "./verticals/finance/lib/publicIntelPage";
 
 /**
  * **组装根**:唯一一处把垂类接进外壳的地方。
@@ -24,7 +25,7 @@ const root = document.getElementById("root");
 if (!root) throw new Error("找不到 #root");
 
 /**
- * 🔴 **先把台账灌进缓存,再挂载 React**。
+ * 🔴 **个人页面先把台账灌进缓存,再挂载 React**；公开情报页独立读取公开消息。
  *    研究记录 / 自选在页面里是**同步读**的(`useState(loadNotes)`),
  *    挂载后才灌好的话首屏永远是空的,而且不会重渲染 —— 表现是"我的记录不见了"。
  * 🔴 灌不进去时**不要退化成空列表挂上去** —— 那会让"连不上后端"长得和"你没有记录"
@@ -55,9 +56,23 @@ function fatal(message: string, detail: string) {
   root!.append(box);
 }
 
-Promise.all([hydrateNotes(), hydrateWatch()])
-  .then(() => {
-    createRoot(root).render(
+prepareFinancePage(window.location.pathname, import.meta.env.BASE_URL, hydrateNotes, hydrateWatch)
+  .then((publicMode) => {
+    const app = createRoot(root);
+    if (publicMode) {
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) window.location.reload();
+      });
+      let leaving = false;
+      // 离开公开页时重新进入个人页面的完整初始化，避免空缓存冒充个人资料。
+      router.subscribe((state) => {
+        if (leaving || isPublicDingTalkPage(state.location.pathname, import.meta.env.BASE_URL)) return;
+        leaving = true;
+        app.unmount();
+        window.location.assign(state.location.pathname + state.location.search + state.location.hash);
+      });
+    }
+    app.render(
       <StrictMode>
         <RouterProvider router={router} />
       </StrictMode>,

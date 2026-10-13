@@ -60,6 +60,8 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 原文请求通过 `view=messages` 区分，并支持 `limit`、`offset`、`q`、`id`；分页不删除历史。
 其他页面、台账、模型配置和写入接口继续由站点认证保护；公开页匿名加载辅助请求时返回 403，
 避免浏览器自动弹出密码框。内部 Bearer 令牌仍仅由 Nginx 注入，不下发浏览器。
+公开情报页启动不读取个人笔记或自选台账；从公开页进入其他栏目时使用整页导航，
+重新经过正常的认证和台账初始化，不以匿名空缓存替代个人资料。
 
 Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟运行
 `scripts/sync-dingtalk-group.mjs`，将消息同步并去重保存到权限受限的本地存档。
