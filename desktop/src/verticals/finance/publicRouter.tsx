@@ -1,7 +1,10 @@
 import { createBrowserRouter, redirectDocument, type LoaderFunctionArgs } from "react-router-dom";
 import { router } from "./router";
+import { prepareFinancePage } from "./lib/publicIntelPage";
+import { hydrateNotes } from "./lib/notes";
+import { hydrateWatch } from "./lib/watchlist";
 
-/** 公开页只挂载情报内容，进入个人栏目时先经过整页认证和台账初始化。 */
+/** 情报标签直接切换并加载真实台账；其他工作台栏目整页进入。 */
 export function createPublicDingTalkRouter() {
   const root = router.routes[0];
   const intel = root?.children?.find(route => route.path === "/intel/:tab");
@@ -12,7 +15,10 @@ export function createPublicDingTalkRouter() {
     children: [{
       ...intel,
       index: false,
-      loader: ({ params, request }: LoaderFunctionArgs) => params.tab === "dingtalk" ? null : redirectDocument(request.url),
+      loader: async ({ request }: LoaderFunctionArgs) => {
+        await prepareFinancePage(new URL(request.url).pathname, import.meta.env.BASE_URL, hydrateNotes, hydrateWatch);
+        return null;
+      },
     }, {
       path: "*",
       loader: ({ request }: LoaderFunctionArgs) => redirectDocument(request.url),
