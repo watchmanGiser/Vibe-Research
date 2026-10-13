@@ -41,6 +41,7 @@ export const NAV_SECTIONS: NavSection[] = [
     { to: "/intel", label: "资讯雷达", icon: "Radar" },
 
     { to: "/intel/semi", label: "Semi动态", icon: "Radar" },
+    { to: "/intel/jianfang", label: "简放", icon: "FileText" },
     { to: "/intel/dingtalk", label: "击球区观点", icon: "FileText" },
     { to: "/signals", label: "产业信号", icon: "Thermometer" },
   ] },

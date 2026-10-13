@@ -90,6 +90,7 @@ The sidebar has 9 primary sections; those with several pages fold them into a se
 | Daily review | — | Where the market stands at a glance: breadth, turnover, short-term sentiment (limit-ups / limit-downs / failed seals, how yesterday's limit-ups did today, promotion rates, limit-up streaks), where the indices sit over the longer term, margin balance, equity vs. bond yields, sector fund flows, and the Dragon-Tiger list; limit-up stocks grouped by industry and compared with the previous two trading days |
 | Industry news | Intelligence radar | News, company filings, and event leads that warrant further checking |
 | Industry news | Semi Feed | Guangzhou feeds and real-time analysis |
+| Industry news | Jianfang | Public Weibo posts, long text and reposts collected on Nova |
 | Industry news | Research Summaries | Guangzhou feeds and real-time analysis |
 | Industry news | Industry signals | Supply-chain signals such as GPU rental rates, monthly industry data, raw materials, and hiring |
 | Industry research | 20 sectors | The sidebar lists the 20 industry sectors directly (click Industry research itself for an overview of all of them). Each sector has its own page with a set of step-by-step research prompts: have the AI read the research reports first, then work through technology roadmaps, the supply chain, and the competitive landscape one page at a time; copy a prompt into your own AI or drop it into the chat in the upper-right corner. Your AI produces the sector content from what it finds; the product doesn't pre-fill it |

@@ -745,6 +745,7 @@ function globalIndexRows(e: Envelope): GlobalIndex[] {
 }
 
 export const api = {
+  jianfang: (options: { limit?: number; offset?: number; q?: string } = {}) => backend.jianfang(options),
   semiTweets: (limit = 100) => backend.semiTweets(limit),
   semiStatus: () => backend.semiStatus(),
   dingtalkGroup: (limit = 200, all = false) => backend.dingtalkGroup(limit, all),

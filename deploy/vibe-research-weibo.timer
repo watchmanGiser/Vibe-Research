@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Jianfang Weibo every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+RandomizedDelaySec=20
+Unit=vibe-research-weibo.service
+
+[Install]
+WantedBy=timers.target
