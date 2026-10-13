@@ -96,4 +96,4 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟
 
 私有环境文件为 `~/.config/vibe-research/weibo.env`（权限 600），可配置 `WEIBO_STATE_DIR`、`WEIBO_BROWSER`、`WEIBO_PUSH_HOST`、`WEIBO_PUSH_USER`、`WEIBO_PUSH_SSH_KEY`。仅记录密钥路径，禁止写入密钥内容或登录 Cookie。采集使用独立匿名访客会话，不访问个人浏览器资料。
 
-原始响应存于 Nova `~/.local/share/vibe-research/weibo/raw/日期/`，累积规范化记录为 `jianfang.json`，推送健康记录为 `last-publish.json`。广州快照为 `/opt/vibe-research/shared/weibo/jianfang.json`，由 SSH 上传临时文件后原子替换。线上 `/weibo/jianfang` 只读该快照，沿用工作台鉴权；可用 `JIANFANG_SNAPSHOT_FILE` 指定隔离测试文件。页面保留原文、转发作者、图片链接、北京时间和原帖链接；刷新按钮只刷新展示，页面每分钟检查新推送。最近成功同步超过 45 分钟时显示存档提示。
+原始响应存于 Nova `~/.local/share/vibe-research/weibo/raw/日期/`，累积规范化记录为 `jianfang.json`，推送健康记录为 `last-publish.json`。广州快照为 `/opt/vibe-research/shared/weibo/jianfang.json`，由 SSH 上传临时文件后原子替换。线上 `/weibo/jianfang` 只读该快照，沿用工作台鉴权；可用 `JIANFANG_SNAPSHOT_FILE` 指定隔离测试文件。微博配图由 Nova 保存到状态目录的 `assets/`，先同步到广州 `/opt/vibe-research/shared/semi/assets/weibo/`，再发布正文快照；沿用站点认证与 `/semi-assets/` 路由。页面保留原文、转发作者、配图、北京时间和原帖链接；刷新按钮只刷新展示，页面每分钟检查新推送。最近成功同步超过 45 分钟时显示存档提示。

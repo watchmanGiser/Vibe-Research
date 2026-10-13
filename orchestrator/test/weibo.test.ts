@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fetchJianfang, WeiboSnapshotError } from '../src/finance/weibo.ts';
 const item = (i: number) => ({ id: String(i), author: '交易者简放', time: new Date(Date.UTC(2026, 9, 13, 0, i)).toISOString(), text: `测试微博 ${i}`, textComplete: true,
-  url: `https://weibo.com/1357064103/Test${i}`, images: [], source: '微博网页版', likes: 0, comments: 0, reposts: 0, pinned: false, repost: null });
+  url: `https://weibo.com/1357064103/Test${i}`, images: [] as string[], source: '微博网页版', likes: 0, comments: 0, reposts: 0, pinned: false, repost: null });
 const snapshot = () => ({ schemaVersion: 1, uid: '1357064103', label: '简放', author: '交易者简放', profileUrl: 'https://www.weibo.com/u/1357064103',
   syncedAt: '2026-10-13T01:00:00Z', lastAttemptAt: '2026-10-13T01:00:00Z', status: 'ok', error: null, items: Array.from({ length: 61 }, (_, i) => item(i)) });
 async function withSnapshot(fn: (file: string, dir: string) => unknown | Promise<unknown>) {
@@ -14,7 +14,7 @@ async function withSnapshot(fn: (file: string, dir: string) => unknown | Promise
   try { await fn(file, dir); } finally { if (prior === undefined) delete process.env.JIANFANG_SNAPSHOT_FILE; else process.env.JIANFANG_SNAPSHOT_FILE = prior; fs.rmSync(dir, { recursive: true, force: true }); }
 }
 test('分页搜索完整历史并按时间倒序，全文和状态保留', async () => withSnapshot(file => {
-  const data = snapshot(); data.items[0]!.text = '长微博'.repeat(1000) + '最后一句';
+  const data = snapshot(); data.items[0]!.images = ['/vibe-research/semi-assets/weibo/' + 'a'.repeat(64) + '.jpg']; data.items[0]!.text = '长微博'.repeat(1000) + '最后一句';
   fs.writeFileSync(file, JSON.stringify(data));
   const first = fetchJianfang(); assert.equal(first.total, 61); assert.equal(first.items[0]!.id, '60'); assert.equal(first.hasMore, true);
   assert.equal(fetchJianfang(new URLSearchParams('offset=60')).items[0]!.id, '0');

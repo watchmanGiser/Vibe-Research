@@ -6,6 +6,7 @@ const raw = (id = '100') => ({ id, bid: 'Test1', created_at: 'Tue Oct 13 13:20:4
 test('保留原文换行、表情和引用链接，实体解码不执行 HTML', () => {
   assert.equal(htmlToText('甲<br>乙<img alt="[微笑]" src="x">&lt;script&gt;'), '甲\n乙[微笑]<script>');
   assert.equal(htmlToText('<script>alert(1)</script><a href="https://weibo.com">参考</a>'), '参考 (https://weibo.com)');
+  assert.equal(htmlToText('<a href="https://m.weibo.cn/search?containerid=123">#话题#</a>'), '#话题#');
 });
 test('按实际发布时间排序且通过 ID 去重，置顶旧文不能排到最新之前', () => {
   const first = normalizePost(raw());

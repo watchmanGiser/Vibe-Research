@@ -7,7 +7,7 @@ function PostBody({ item }: { item: WeiboPost }) {
   const long = item.text.length > 600;
   const body = <p className="whitespace-pre-wrap break-words text-sm leading-7">{item.text}</p>;
   return <>
-    {long ? <details className="group/body"><summary className="cursor-pointer text-xs text-primary"><span className="mb-1 block whitespace-pre-wrap text-sm leading-7 text-foreground group-open/body:hidden">{item.text.slice(0, 240)}…</span>展开全文 · {item.text.length} 字</summary><div className="mt-2">{body}</div></details> : body}
+    {long ? <details className="group/body"><summary className="cursor-pointer text-xs text-primary"><span className="mb-1 block whitespace-pre-wrap break-words text-sm leading-7 text-foreground group-open/body:hidden">{item.text.slice(0, 240)}…</span>展开全文 · {item.text.length} 字</summary><div className="mt-2">{body}</div></details> : body}
     {!item.textComplete && <p className="mt-2 text-xs text-warning">当前为节选，全文可查看原帖。</p>}
     {item.images.length > 0 && <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
       {item.images.map((src, i) => <a key={src} href={src} target="_blank" rel="noreferrer" className="block min-w-0 overflow-hidden rounded-lg border border-border/50">

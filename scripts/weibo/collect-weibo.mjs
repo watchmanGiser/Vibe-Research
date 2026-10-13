@@ -5,10 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { UID, normalizePost, buildSnapshot, failureSnapshot } from './weibo-common.mjs';
 
 const STATE = process.env.WEIBO_STATE_DIR || path.join(os.homedir(), '.local/share/vibe-research/weibo');
 const FILE = path.join(STATE, 'jianfang.json');
+const ASSETS = path.join(STATE, 'assets');
+const PUBLIC_ASSETS = '/vibe-research/semi-assets/weibo/';
 function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.new-${process.pid}`;
@@ -31,7 +34,7 @@ async function collect() {
     await page.goto(`https://m.weibo.cn/u/${UID}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
     // 访客页会自动跳转并创建匿名会话，不读取或保存个人浏览器登录资料。
     await page.waitForURL(`https://m.weibo.cn/u/${UID}`, { timeout: 60000 });
-    await page.waitForFunction(() => document.body.innerText.includes('交易者简放'), { timeout: 45000 });
+    await page.waitForFunction(() => document.body.innerText.includes('交易者简放'), null, { timeout: 45000 });
     const fetchJson = async url => await page.evaluate(async url => {
       const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
       if (!r.ok) throw Error('微博公开接口暂不可用');
@@ -56,9 +59,31 @@ async function collect() {
       } catch { warnings.push(`微博 ${raw.id} 全文暂未更新，保留已有正文或标注节选`); }
     }
     const items = posts.map(p => normalizePost(p, expanded));
+    fs.mkdirSync(ASSETS, { recursive: true, mode: 0o700 });
+    for (const post of items.flatMap(p => [p, p.repost].filter(Boolean))) {
+      const local = [];
+      for (const url of post.images) {
+        const key = createHash('sha256').update(url).digest('hex');
+        const existing = ['jpg', 'png', 'webp', 'gif'].map(ext => `${key}.${ext}`).find(name => fs.existsSync(path.join(ASSETS, name)));
+        if (existing) { local.push(PUBLIC_ASSETS + existing); continue; }
+        try {
+          // 官方图片源要求微博 Referer；只从已通过域名校验的新浪图片地址读取。
+          const response = await context.request.get(url, { headers: { Referer: 'https://m.weibo.cn/' }, timeout: 30000, maxRedirects: 0 });
+          const type = response.headers()['content-type']?.split(';')[0];
+          const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' }[type];
+          if (!response.ok() || !ext || Number(response.headers()['content-length'] || 0) > 20 * 1024 * 1024) throw Error('图片响应无效');
+          const bytes = await response.body();
+          if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw Error('图片大小无效');
+          const name = `${key}.${ext}`;
+          fs.writeFileSync(path.join(ASSETS, name), bytes, { mode: 0o600 });
+          local.push(PUBLIC_ASSETS + name);
+        } catch { local.push(url); warnings.push('部分配图暂未保存，可通过原帖查看'); }
+      }
+      post.images = local;
+    }
     const at = new Date().toISOString();
     atomicJson(path.join(STATE, 'raw', at.slice(0, 10), `${at.replace(/[:.]/g, '-')}.json`), { collectedAt: at, uid: UID, timeline, longTexts: longRaw });
-    return buildSnapshot(previous, items, at, warnings);
+    return buildSnapshot(previous, items, at, [...new Set(warnings)]);
   } finally { await browser.close(); }
 }
 function publish(snapshot) {
@@ -72,6 +97,12 @@ function publish(snapshot) {
   const uploading = `${remote}.uploading-${process.pid}`;
   const run = (bin, args) => { const r = spawnSync(bin, args, { encoding: 'utf8', timeout: 90000, maxBuffer: 1024 * 1024 });
     if (r.error || r.status !== 0) throw Error('微博快照推送失败，线上保留原有内容'); };
+  if (fs.existsSync(ASSETS)) {
+    const remoteAssets = '/opt/vibe-research/shared/semi/assets/weibo';
+    run('ssh', [...ssh, dest, `install -d -m 755 ${remoteAssets}`]);
+    const shellQuote = s => "'" + s.replace(/'/g, "'\\''") + "'";
+    run('rsync', ['-az', '--ignore-existing', '--chmod=D755,F644', '-e', ['ssh', ...ssh].map(shellQuote).join(' '), ASSETS + '/', `${dest}:${remoteAssets}/`]);
+  }
   run('scp', [...ssh, '-q', FILE, `${dest}:${uploading}`]);
   run('ssh', [...ssh, dest, `chmod 640 ${uploading} && mv -f ${uploading} ${remote}`]);
   atomicJson(path.join(STATE, 'last-publish.json'), { publishedAt: new Date().toISOString(), syncedAt: snapshot.syncedAt, count: snapshot.items.length, status: snapshot.status });

@@ -6,7 +6,7 @@ export function htmlToText(html = '') {
   return String(html).replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<img\b[^>]*alt=["']([^"']*)["'][^>]*>/gi, '$1')
     .replace(/<br\s*\/?\s*>/gi, '\n').replace(/<\/(?:p|div)>/gi, '\n')
-    .replace(/<a\b[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, url, text) => `${text} (${url})`)
+    .replace(/<a\b[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, url, text) => /^https?:\/\/(?:m\.)?weibo\.(?:cn|com)\/(?:search|n|u|p)\b/i.test(url) ? text : `${text} (${url})`)
     .replace(/<[^>]*>/g, '')
     .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
       if (entity[0] !== '#') return ENTITIES[entity.toLowerCase()] ?? all;
@@ -15,7 +15,7 @@ export function htmlToText(html = '') {
     }).replace(/[ \t]+\n/g, '\n').trim();
 }
 export function imageUrl(value) {
-  try { const u = new URL(value); return u.protocol === 'https:' && /(^|\.)sinaimg\.cn$/.test(u.hostname) ? u.href : null; }
+  try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && /(^|\.)sinaimg\.cn$/.test(u.hostname) ? u.href : null; }
   catch { return null; }
 }
 export function normalizePost(raw, expanded = new Map(), isRepost = false) {

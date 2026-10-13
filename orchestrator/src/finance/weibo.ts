@@ -23,6 +23,7 @@ function validatePost(value: unknown, nested = false): WeiboPost {
       !text(p.url) || !/^https:\/\/weibo\.com\/\d+\/[a-zA-Z0-9]+$/.test(p.url) || (!nested && !p.url.startsWith('https://weibo.com/1357064103/')) ||
       !Array.isArray(p.images) || !p.images.every(v => {
         if (!text(v)) return false;
+        if (/^\/vibe-research\/semi-assets\/weibo\/[a-f0-9]{64}\.(?:jpg|png|webp|gif)$/.test(v)) return true;
         try { const u = new URL(v); return u.protocol === 'https:' && !u.username && !u.password && /(^|\.)sinaimg\.cn$/.test(u.hostname); }
         catch { return false; }
       }) || (!p.text.trim() && !p.images.length) || (nested && p.repost !== null)) invalid();
