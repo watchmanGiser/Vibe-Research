@@ -6,10 +6,12 @@ import { DingTalkGroupPanel } from "./SemiPanels";
 
 /** 独立只读入口，直接使用公开消息与总结，不加载个人资料或工作台外壳。 */
 export function DingTalkStandalone() {
-  const [theme, setTheme] = useState<"dark" | "light">(() => storageGet("vra-theme") === "light" ? "light" : "dark");
+  const [theme, setTheme] = useState<"dark" | "light">(() => storageGet("dingtalk-theme") === "dark" ? "dark" : "light");
   useEffect(() => {
+    document.documentElement.classList.toggle("light", theme === "light");
+    document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.dataset.theme = theme;
-    storageSet("vra-theme", theme);
+    storageSet("dingtalk-theme", theme);
   }, [theme]);
   return (
     <main aria-label="击球区 消息" className="mx-auto min-h-screen max-w-[1920px] px-0 py-4 md:px-6 md:py-5">
@@ -21,7 +23,7 @@ export function DingTalkStandalone() {
             <p className="mt-1 text-xs text-muted-foreground sm:text-sm">原始消息完整归档，观点总结同步浏览</p>
           </div>
         </div>
-        <button type="button" aria-label={theme === "dark" ? "切换为浅色" : "切换为深色"} onClick={() => setTheme(value => value === "dark" ? "light" : "dark")}
+        <button type="button" aria-label={theme === "dark" ? "切换为浅色" : "切换为深色"} title={theme === "dark" ? "切换为浅色" : "切换为深色"} onClick={() => setTheme(value => value === "dark" ? "light" : "dark")}
           className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background/30 px-3 py-2 text-xs text-muted-foreground hover:text-primary">
           {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}<span className="hidden sm:inline">{theme === "dark" ? "浅色" : "深色"}</span>
         </button>

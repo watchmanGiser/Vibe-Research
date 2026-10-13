@@ -1,16 +1,20 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" class="light" data-theme="light" data-page="dingtalk-standalone">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="击球区原始消息完整归档、去重展示与观点总结，支持全文搜索和原文对照。" />
     <title>击球区 消息</title>
     <script>
+      var theme = "light";
       try {
-        document.documentElement.dataset.theme = localStorage.getItem("vra-theme") === "light" ? "light" : "dark";
+        theme = localStorage.getItem("dingtalk-theme") === "dark" ? "dark" : "light";
       } catch (e) {
-        document.documentElement.dataset.theme = "dark";
+        // 存储不可用时仍按白底正常打开。
       }
+      document.documentElement.classList.toggle("light", theme === "light");
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      document.documentElement.dataset.theme = theme;
     </script>
   </head>
   <body>

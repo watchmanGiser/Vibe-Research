@@ -67,6 +67,9 @@
     --chart-axis: 228 9% 80%;
   }
 
+  /* 独立消息页使用纯白阅读背景，其他页面沿用原主题。 */
+  .light[data-page="dingtalk-standalone"] { --background: 0 0% 100%; }
+
   * { @apply border-border; }
 
   /* 平底，不加光晕：数据多的页面里底色越安静，方框越清楚 */
