@@ -23,13 +23,15 @@ test("完整查询可去重并幂等；不完整查询保留旧快照", () => {
       { messageId: "a", conversationId: "test-conversation", text: long, createTime: now, sender: "甲" },
       { messageId: "b", conversationId: "test-conversation", text: long, createTime: now, sender: "乙" },
       { messageId: "c", conversationId: "test-conversation", text: "不同内容", createTime: now, sender: "丙" },
+      { messageId: "price-a", conversationId: "test-conversation", text: long + "目标价1.5元", createTime: now, sender: "甲" },
+      { messageId: "price-b", conversationId: "test-conversation", text: long + "目标价15元", createTime: now, sender: "甲" },
     ];
     const run = () => spawnSync(process.execPath, [script], { encoding: "utf8", env });
     fs.writeFileSync(responseFile, JSON.stringify({ complete: true, messages }));
     assert.equal(run().status, 0);
     const first = fs.readFileSync(snapshotFile, "utf8");
     const data = JSON.parse(first);
-    assert.equal(data.messages.length, 2);
+    assert.equal(data.messages.length, 4);
     assert.equal(data.duplicateCount, 1);
     assert.deepEqual(data.messages.find((m) => m.messageId === "a").duplicateMessageIds, ["b"]);
     assert.equal(run().status, 0);

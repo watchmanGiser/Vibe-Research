@@ -281,6 +281,16 @@ export const backend = {
     schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
     opinions: Array<{ id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
   }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`),
+  dingtalkMessages: (options: { limit?: number; offset?: number; q?: string; id?: string } = {}) => {
+    const query = new URLSearchParams({ view: "messages", limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });
+    if (options.q) query.set("q", options.q);
+    if (options.id) query.set("id", options.id);
+    return call<{
+      schemaVersion: 1; label: string; syncedAt: string; duplicateCount: number; total: number; filteredTotal: number;
+      offset: number; limit: number; hasMore: boolean;
+      messages: Array<{ id: string; time: string; sender: string; text: string; duplicateCount: number; relatedIds: string[]; latestDuplicateTime: string | null }>;
+    }>(`/semi/dingtalk?${query}`);
+  },
   semiStatus: () => call<{
     running: boolean; mode: string; last_error?: string; source_cooldown_remaining?: number;
     counts?: { total?: number; translated?: number }; pushed_at?: string; transport?: string;

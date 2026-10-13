@@ -16,7 +16,8 @@ const snapshotFile = process.env.DINGTALK_SEMI_SNAPSHOT_FILE || path.join(os.hom
 const dws = process.env.DWS_BIN || "dws";
 const now = new Date();
 const iso = (date) => date.toISOString();
-const norm = (text) => text.normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "");
+// 保留标点、数字与单位差异，只消除换行格式和行末空白。
+const norm = (text) => text.normalize("NFC").replace(/\r\n?/g, "\n").split("\n").map(line => line.trimEnd()).join("\n").trim();
 const fingerprint = (text) => createHash("sha256").update(norm(text)).digest("hex");
 
 let old = null;
@@ -71,7 +72,7 @@ for (const source of response.messages) {
   seenIds.add(messageId);
   if (fp) byFingerprint.set(fp, message);
 }
-// 原文只保存在 Nova：不按展示窗口删除历史原始消息，避免定时整理丢失可追溯性。
+// 原始归档不按展示窗口删除历史消息，供原文展示与总结追溯。
 const messages = [...byId.values()].sort((a, b) => b.time.localeCompare(a.time));
 const snapshot = {
   group,

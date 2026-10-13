@@ -748,6 +748,7 @@ export const api = {
   semiTweets: (limit = 100) => backend.semiTweets(limit),
   semiStatus: () => backend.semiStatus(),
   dingtalkGroup: (limit = 200) => backend.dingtalkGroup(limit),
+  dingtalkMessages: (options: { limit?: number; offset?: number; q?: string; id?: string } = {}) => backend.dingtalkMessages(options),
   quote: (codes: string, refresh = false) => quoteMap(codes.split(",").map((c) => c.trim()).filter(Boolean), refresh),
   announcements: announcementsOf,
   news: newsOf,

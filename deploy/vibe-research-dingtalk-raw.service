@@ -1,5 +1,5 @@
 [Unit]
-Description=Nova 本地第三方调研消息原文同步（禁止向线上推送）
+Description=Nova 第三方调研原文同步与去重发布
 Wants=network-online.target
 After=network-online.target
 
@@ -8,6 +8,7 @@ Type=oneshot
 WorkingDirectory=%h/.local/lib/vibe-research-dingtalk
 EnvironmentFile=%h/.config/vibe-research/dingtalk.env
 ExecStart=/usr/bin/node %h/.local/lib/vibe-research-dingtalk/sync-dingtalk-group.mjs
+ExecStartPost=/usr/bin/node %h/.local/lib/vibe-research-dingtalk/publish-dingtalk-raw.mjs
 UMask=0077
 StandardOutput=journal
 StandardError=journal

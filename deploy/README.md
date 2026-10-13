@@ -51,20 +51,30 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 /usr/local/sbin/vibe-healthcheck https://soufly.cn/vibe-research
 ```
 
-## 击球区观点（仅 Nova 保存原文）
+## 击球区原文与观点总结
 
-Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 模板（安装到 `~/.config/systemd/user/`）每 30 分钟只运行 `scripts/sync-dingtalk-group.mjs`，将原文完整同步并去重，保存到权限受限的
-`DINGTALK_LOCAL_SNAPSHOT_FILE`，独立的 `scripts/push-dingtalk-group.mjs` 在模型提供方许可确认后同步本地原文，并只对超过 120 字的观点调用 Nova 上配置的 Codex GPT CLI
-（可通过 `DINGTALK_GPT_BIN` 指定）；模型将第三方观点整理为主题、概述、要点和待核验风险。原文不自动按 90 天窗口删除。
-上线前可用 `DINGTALK_SUMMARY_ONLY=1` 本地试运行，不执行 scp/ssh；原文超过 200000 字、模型调用失败、输出不合规时停止推送，不会退回上传原文。
-已整理的结构化结果仅存 Nova `DINGTALK_LOCAL_SUMMARY_FILE`，按消息指纹缓存避免重复费用。
-仅白名单摘要经 SSH 原子替换线上 `/opt/vibe-research/shared/semi/dingtalk.json`；线上 API 严格拒绝旧
-`messages/text` 格式和多余字段。服务端不安装 DWS 或模型，也不保存群会话 ID、原始消息或发送人。
+页面「资讯雷达 → 击球区观点」分列展示完整去重原文和现有总结，窄屏上下排列。
+原文支持全历史全文搜索、分页和展开全文；总结保留主题、概述、要点及风险，并可定位对应原文。
+两栏使用同一个受 Nginx Basic Auth 保护、禁止缓存的只读 `/semi/dingtalk` 接口，
+原文请求通过 `view=messages` 区分，并支持 `limit`、`offset`、`q`、`id`；分页不删除历史。
+
+Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟运行
+`scripts/sync-dingtalk-group.mjs`，将消息同步并去重保存到权限受限的本地存档。
+同步成功后 `ExecStartPost` 调用 `scripts/publish-dingtalk-raw.mjs`，把所有长短原文独立原子发布到
+`/opt/vibe-research/shared/semi/dingtalk-raw.json`，不依赖模型整理成功。
+原文发布只包含正文、发送者、时间、重复计数和散列关联 ID，不发布群会话 ID、凭据或 reaction；
+去重保留数字、单位、标点差异，只统一换行与行末空白。原文不按展示窗口或 90 天窗口删除。
+本地原文路径由 `DINGTALK_LOCAL_SNAPSHOT_FILE` 指定，服务端由 `DINGTALK_RAW_SNAPSHOT_FILE` 指定；
+`DINGTALK_RAW_PUBLISH_ONLY=1` 可仅校验本地存档、不上传。
+
+独立的 `scripts/push-dingtalk-group.mjs` 继续按原机制整理超过 120 字的观点，
+模型提供方许可、输出白名单、摘要缓存和失败禁止覆盖规则保持生效；
+总结独立写入 `/opt/vibe-research/shared/semi/dingtalk.json`，与原文文件互不覆盖。
+已整理结果在 Nova `DINGTALK_LOCAL_SUMMARY_FILE` 按消息指纹缓存；
+`DINGTALK_SUMMARY_ONLY=1` 仍可本地试运行、不上传。
 
 私有 systemd 配置 `DINGTALK_GROUP_NAME`、`DINGTALK_CONVERSATION_ID`、
-`DINGTALK_PUSH_HOST`、`DINGTALK_PUSH_SSH_KEY`；这些凭据和本地原文不入仓库。
-**Codex CLI 在 Nova 本地运行但模型推理可能通过配置的供应商服务执行**；在确认第三方资料
-允许此类模型处理、且实际模型可用之前，定时器保持停用。确认后需在 Nova 私有配置显式设置 `DINGTALK_GPT_PROVIDER_APPROVED=1`，单独启用 `vibe-research-dingtalk-push.timer`。不得声称为离线本地模型。
-页面「资讯雷达 → 击球区观点」显示整理结果，非已核验的事实或投资建议。
-当前精确 API 路由由现有 Nginx Basic Auth 保护，缓存禁用。上线前备份旧快照并隔离旧原文，
-不得删除生产 `.local`；版本与审批流程遵循 `deploy/README.md` 其他章节。
+`DINGTALK_PUSH_HOST`、`DINGTALK_PUSH_SSH_KEY`；凭据、本地和线上原文均不入仓库或发布包。
+模型推理可能通过配置的供应商服务执行，原有 `DINGTALK_GPT_PROVIDER_APPROVED=1` 许可要求继续仅适用于总结流水线。
+服务器不安装 DWS 或模型，原文与摘要异常分别提示，不以某一栏失败判定另一栏没有数据。
+上线前备份代码、本地存档和流水线配置；不得删除生产 `.local`，版本与回滚遵循上述生产发布规则。

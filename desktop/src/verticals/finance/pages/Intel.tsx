@@ -22,7 +22,7 @@ import { SemiPanel, DingTalkGroupPanel } from "./SemiPanels";
 // 顺序即侧栏子栏目顺序（Layout 的 INTEL_LINKS 与此一致）
 const TABS = [
   { key: "semi", label: "Semi动态", icon: Rss, integrated: true, desc: "Semi 跟踪动态与中文整理" },
-  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "Nova 本地整理的第三方调研纪要与观点摘要，待独立核验" },
+  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文与第三方观点总结，待独立核验" },
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
   { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
   { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
@@ -506,7 +506,7 @@ export function Intel() {
       </GlassCard>
 
       <p className="mt-3 text-[11px] text-muted-foreground/60">
-        {cur.key === "dingtalk" ? "本页展示第三方调研纪要与观点摘要；内容未经公告核验，不等同于已确认事实，也不构成投资建议。" : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
+        {cur.key === "dingtalk" ? "本页保留完整去重原文与第三方观点总结；内容未经公告核验，不等同于已确认事实，也不构成投资建议。" : "只做公开信息聚合、不做推荐、不预测涨跌。公告 / 新闻均来自你关注列表里个股的公开披露与公开源；赛道资讯已按合规词表过滤。今日要点由本地 Agent 组织数据，再交给你选择的模型完成推理。"}
       </p>
       <Disclaimer />
     </div>

@@ -1,4 +1,4 @@
-/** 线上仅读取 Nova 推送的结构化第三方观点摘要；旧原文格式一律拒绝。 */
+/** 总结栏读取 Nova 推送的严格白名单摘要，原文由独立快照提供。 */
 import fs from 'node:fs';
 export class DingTalkSnapshotError extends Error { readonly status = 503; }
 const exact = (o: Record<string, unknown>, keys: string[]) => Object.keys(o).sort().join(',') === keys.sort().join(',');
