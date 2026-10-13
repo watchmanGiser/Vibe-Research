@@ -69,7 +69,7 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 公开情报页启动不读取个人笔记或自选台账；从公开页进入其他栏目时使用整页导航，
 重新经过正常的认证和台账初始化，不以匿名空缓存替代个人资料。
 
-Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟运行
+Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟运行
 `scripts/sync-dingtalk-group.mjs`，将消息同步并去重保存到权限受限的本地存档。
 同步成功后 `ExecStartPost` 调用 `scripts/publish-dingtalk-raw.mjs`，把所有长短原文独立原子发布到
 `/opt/vibe-research/shared/semi/dingtalk-raw.json`，不依赖模型整理成功。
@@ -78,7 +78,9 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟
 本地原文路径由 `DINGTALK_LOCAL_SNAPSHOT_FILE` 指定，服务端由 `DINGTALK_RAW_SNAPSHOT_FILE` 指定；
 `DINGTALK_RAW_PUBLISH_ONLY=1` 可仅校验本地存档、不上传。
 
-独立的 `scripts/push-dingtalk-group.mjs` 继续按原机制整理超过 120 字的观点，
+独立的 `deploy/vibe-research-dingtalk-push.timer` 每 10 分钟触发既有推送服务，
+由 `scripts/push-dingtalk-group.mjs` 整理超过 120 字的观点。两个定时器关闭随机延迟，
+调度精度为 1 秒；没有新增内容时跳过重复发布。
 模型提供方许可、输出白名单、摘要缓存和失败禁止覆盖规则保持生效；
 总结独立写入 `/opt/vibe-research/shared/semi/dingtalk.json`，与原文文件互不覆盖。
 已整理结果在 Nova `DINGTALK_LOCAL_SUMMARY_FILE` 按消息指纹缓存；
