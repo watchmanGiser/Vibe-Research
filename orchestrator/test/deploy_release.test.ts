@@ -25,7 +25,7 @@ test("远端发布只为 Nginx 开放静态构建目录", () => {
 });
 
 
-test("钉钉页面及原文总结公开只读，通用数据接口仍要求认证", () => {
+test("工作台页面及数据接口免登录，钉钉保留原文总结专用路由", () => {
   const nginx = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research.nginx.conf"), "utf8");
   const route = nginx.match(/location = \/vibe-research\/api\/semi\/dingtalk \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(route, "原文和总结必须走专用精确路由");
@@ -40,8 +40,8 @@ test("钉钉页面及原文总结公开只读，通用数据接口仍要求认�
   assert.match(page, /alias \/opt\/vibe-research\/app\/desktop\/dist\/index\.html;/);
   const api = nginx.match(/location \^~ \/vibe-research\/api\/ \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(api);
-  assert.match(api, /auth_basic "Vibe Research";/);
-  assert.match(api, /vra_dingtalk_public_visitor = 1\) \{ return 403;/);
+  assert.match(api, /auth_basic off;/);
+  assert.doesNotMatch(nginx, /auth_basic "Vibe Research"|auth_basic_user_file|vra_dingtalk_public_visitor/);
 });
 
 test("Nova 原文定时器同步后调用独立原文发布入口", () => {
