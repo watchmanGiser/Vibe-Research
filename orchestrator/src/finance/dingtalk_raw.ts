@@ -5,6 +5,7 @@ import { DingTalkSnapshotError } from './dingtalk_semi.ts';
 export interface DingTalkMessage {
   id: string; time: string; sender: string; text: string; duplicateCount: number;
   relatedIds: string[]; latestDuplicateTime: string | null;
+  images?: Array<{ reference: string; url: string }>;
 }
 const exact = (o: Record<string, unknown>, keys: string[]) => Object.keys(o).sort().join(',') === [...keys].sort().join(',');
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
@@ -23,11 +24,15 @@ export function fetchDingTalkMessages(query = new URLSearchParams()) {
   const data = raw as Record<string, unknown>;
   if (data.schemaVersion !== 1 || data.label !== '击球区原始消息' || !time(data.syncedAt) || !integer(data.duplicateCount) || !Array.isArray(data.messages)) invalid();
   const messages = (data.messages as unknown[]).map((item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item) || !exact(item as Record<string, unknown>, ['id', 'time', 'sender', 'text', 'duplicateCount', 'relatedIds', 'latestDuplicateTime'])) invalid();
+    if (!item || typeof item !== 'object' || Array.isArray(item) || !exact(item as Record<string, unknown>, ['id', 'time', 'sender', 'text', 'duplicateCount', 'relatedIds', 'latestDuplicateTime', ...(Object.hasOwn(item, 'images') ? ['images'] : [])])) invalid();
     const m = item as Record<string, unknown>;
     if (!id(m.id) || !time(m.time) || !text(m.sender) || !text(m.text) || !integer(m.duplicateCount) ||
         !Array.isArray(m.relatedIds) || !m.relatedIds.every(id) || !m.relatedIds.includes(m.id) ||
         (m.latestDuplicateTime !== null && !time(m.latestDuplicateTime))) invalid();
+    const references = new Set([...(m.text as string).matchAll(/\[图片消息\]\(mediaId=([^\r\n)]+)\)/g)].map(match => match[1]!.trim()));
+    if (m.images !== undefined && (!Array.isArray(m.images) || !m.images.every(image => image && typeof image === 'object' && !Array.isArray(image) &&
+        exact(image, ['reference', 'url']) && text(image.reference) && references.has(image.reference) &&
+        typeof image.url === 'string' && /^\/dingtalk\/media\/[a-f0-9]{64}\.(?:jpg|png|gif|webp)$/.test(image.url)))) invalid();
     return m as unknown as DingTalkMessage;
   }).sort((a, b) => timestamp(b.time) - timestamp(a.time) || a.id.localeCompare(b.id));
   const requestedLimit = Number(query.get('limit') ?? 30);

@@ -103,3 +103,20 @@ test('整页模式一次返回全部原文，超过旧限制的历史仍可搜�
     assert.equal(focused.hasMore, false);
   });
 });
+
+test('兼容无配图的旧原文；仅接受原文对应的本站图片路径，拒绝临时授权网址', async () => {
+  await withSnapshot(file => {
+    const original = '原文\n\n[图片消息](mediaId= @real-image )';
+    const image = { reference: '@real-image', url: `/dingtalk/media/${'a'.repeat(64)}.jpg` };
+    const item = { ...message(1), text: original, images: [image] };
+    fs.writeFileSync(file, JSON.stringify(snapshot([item])));
+    const result = fetchDingTalkMessages();
+    assert.deepEqual(result.messages[0]!.images, [image]);
+    assert.equal(result.messages[0]!.text, original);
+    for (const images of [[{ ...image, url: 'https://example.com/image.jpg?token=private' }], [{ ...image, url: '/dingtalk/media/../../secret' }], [{ ...image, reference: '@other-image' }], [{ ...image, token: 'private' }], 'invalid']) {
+      const invalid = { ...item, images };
+      fs.writeFileSync(file, JSON.stringify(snapshot([invalid])));
+      assert.throws(() => fetchDingTalkMessages(), DingTalkSnapshotError);
+    }
+  });
+});

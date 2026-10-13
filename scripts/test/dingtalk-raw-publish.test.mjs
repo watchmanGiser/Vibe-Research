@@ -36,7 +36,7 @@ test('超过 500 条历史原文仍完整发布；已有重复计数和关联 ID
   assert.throws(() => buildRawFeed(snapshot([message('x', '原文', { time: '无效时间' })]), 'private-conversation'));
 });
 
-test('原文单独原子上传，不依赖摘要模型，也不能覆盖摘要快照', () => {
+test('原文单独原子上传，不依赖摘要模型，也不能覆盖摘要快照', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-raw-publish-test-'));
   try {
     const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
@@ -48,9 +48,50 @@ test('原文单独原子上传，不依赖摘要模型，也不能覆盖摘要�
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DINGTALK_LOCAL_SNAPSHOT_FILE: source,
       DINGTALK_CONVERSATION_ID: 'private-conversation', DINGTALK_PUSH_HOST: 'example.test', DINGTALK_PUSH_SSH_KEY: key, TEST_CAPTURED: captured, TEST_CALLS: calls,
       DINGTALK_GPT_PROVIDER_APPROVED: '0' };
-    publishRawFeed(env);
+    await publishRawFeed(env);
     assert.equal(JSON.parse(fs.readFileSync(captured)).messages[0].text, '短消息也保留');
     assert.match(fs.readFileSync(calls, 'utf8'), /chmod 0640.*mv -f.*dingtalk-raw\.json/);
-    assert.throws(() => publishRawFeed({ ...env, DINGTALK_REMOTE_RAW_SNAPSHOT_FILE: '/opt/vibe-research/shared/semi/dingtalk.json' }));
+    await assert.rejects(() => publishRawFeed({ ...env, DINGTALK_REMOTE_RAW_SNAPSHOT_FILE: '/opt/vibe-research/shared/semi/dingtalk.json' }));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('发布真实配图引用和本站缓存路径，原文及关联 ID 完整保留', () => {
+  const original = '原文\n\n[图片消息](mediaId=@image-a)\n[图片消息](mediaId=@image-b)';
+  const url = `/dingtalk/media/${'a'.repeat(64)}.png`;
+  const feed = buildRawFeed(snapshot([message('picture', original)]), 'private-conversation', new Map([['@image-a', url]]));
+  assert.equal(feed.messages[0].text, original);
+  assert.deepEqual(feed.messages[0].images, [{ reference: '@image-a', url }]);
+  assert.equal(feed.messages[0].relatedIds.length, 1);
+});
+
+test('先上传配图再发布正文，图片上传失败不会替换原文快照', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-image-publish-test-'));
+  try {
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const cache = path.join(dir, 'cache'); fs.mkdirSync(cache);
+    const { createHash } = await import('node:crypto');
+    const hash = value => createHash('sha256').update(value).digest('hex');
+    const bytes = Buffer.from('89504e470d0a1a0a0000000000000000', 'hex');
+    const filename = `${hash(bytes)}.png`;
+    fs.writeFileSync(path.join(cache, filename), bytes);
+    fs.writeFileSync(path.join(cache, 'index.json'), JSON.stringify({ schemaVersion: 1, conversationHash: hash('private-conversation'), files: { [hash('@cached-image')]: filename } }));
+    const source = path.join(dir, 'raw.json'); const calls = path.join(dir, 'calls'); const key = path.join(dir, 'key');
+    fs.writeFileSync(key, 'test-key');
+    fs.writeFileSync(source, JSON.stringify(snapshot([message('a', '原文[图片消息](mediaId=@cached-image)')])));
+    fs.writeFileSync(path.join(bin, 'scp'), `#!/usr/bin/env node
+const fs=require('node:fs');const directory=fs.statSync(process.argv.at(-2)).isDirectory();
+fs.appendFileSync(process.env.TEST_CALLS, directory?'images-upload\\n':'feed-upload\\n');
+if(directory && process.env.TEST_FAIL_IMAGES==='1')process.exit(1);
+`, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'ssh'), `#!/usr/bin/env node
+require('node:fs').appendFileSync(process.env.TEST_CALLS, process.argv.at(-1).includes('rmdir')?'images-publish\\n':'feed-publish\\n');
+`, { mode: 0o700 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DINGTALK_LOCAL_SNAPSHOT_FILE: source, DINGTALK_MEDIA_CACHE_DIR: cache,
+      DINGTALK_CONVERSATION_ID: 'private-conversation', DINGTALK_PUSH_HOST: 'example.test', DINGTALK_PUSH_SSH_KEY: key, TEST_CALLS: calls };
+    await publishRawFeed(env);
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'images-upload\nimages-publish\nfeed-upload\nfeed-publish\n');
+    fs.writeFileSync(calls, '');
+    await assert.rejects(() => publishRawFeed({ ...env, TEST_FAIL_IMAGES: '1' }));
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'images-upload\n');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { dingTalkContent } from "../lib/dingtalk_content";
 interface SemiTweet {
   id: string; handle?: string; author_name?: string; author_screen?: string;
   created_ts?: number; text?: string; zh?: string; take?: string; category?: string;
@@ -114,9 +115,22 @@ function formatDingTalkTime(value: string): string {
   return Number.isFinite(date.getTime()) ? date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : value;
 }
 
+function DingTalkOriginalImage({ url, sender, index }: { url: string; sender: string; index: number }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return <p className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">配图 {index + 1}：原图暂时无法加载</p>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className="block min-w-0" title="点击查看原图">
+      <img src={url} alt={`${sender} 的原文配图 ${index + 1}`} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+        className="max-h-96 w-full rounded-lg border border-border/50 bg-muted/10 object-contain" onError={() => setFailed(true)} />
+      <span className="mt-1 block text-center text-[11px] text-muted-foreground">点击查看原图</span>
+    </a>
+  );
+}
+
 export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: DingTalkMessage; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const long = item.text.length > 600;
+  const content = dingTalkContent(item.text, item.images);
+  const long = content.text.length > 600;
   return (
     <article className="rounded-xl border border-border/60 bg-background/40 p-4" data-message-id={item.id}>
       <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -124,9 +138,12 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
         <time>{formatDingTalkTime(item.time)}</time>
         {item.duplicateCount > 0 && <span className="rounded-full bg-muted px-2 py-0.5" title={item.latestDuplicateTime ? `最近重复：${formatDingTalkTime(item.latestDuplicateTime)}` : undefined}>已合并 {item.duplicateCount} 条重复</span>}
       </div>
-      <p className={cn("whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]", long && !expanded && "line-clamp-6")}>{item.text}</p>
+      {content.text && <p className={cn("whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]", long && !expanded && "line-clamp-6")}>{content.text}</p>}
       {long && <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}
-        className="mt-3 rounded-md px-1 py-1 text-xs font-medium text-primary hover:bg-primary/10">{expanded ? "收起全文" : `展开全文（${item.text.length.toLocaleString("zh-CN")} 字）`}</button>}
+        className="mt-3 rounded-md px-1 py-1 text-xs font-medium text-primary hover:bg-primary/10">{expanded ? "收起全文" : `展开全文（${content.text.length.toLocaleString("zh-CN")} 字）`}</button>}
+      {content.images.length > 0 && <div className={cn("mt-3 grid items-start gap-3", content.images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+        {content.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={item.sender} index={index} />)}
+      </div>}
     </article>
   );
 }
