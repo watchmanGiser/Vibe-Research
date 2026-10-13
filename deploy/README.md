@@ -84,7 +84,9 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟
 模型提供方许可、输出白名单、摘要缓存和失败禁止覆盖规则保持生效；
 总结独立写入 `/opt/vibe-research/shared/semi/dingtalk.json`，与原文文件互不覆盖。
 图片消息从已校验的 Nova 原图缓存作为本机整理工具的图片附件输入，短图片通知也纳入整理。
-通知、公告等以 `kind=event` 记录，研究判断以 `kind=opinion` 记录；旧的无分类缓存继续兼容。
+通知、公告等以 `kind=event` 记录；明确券商/研究机构来源的研报以 `kind=research` 记录，
+保留机构、原报告标题和所附原页识别文字，用“报告称/认为/预计”表达原报告内容，不机械添加待核验。
+其余研究判断以 `kind=opinion` 记录；旧的无分类缓存继续兼容。原页识别不冒称完整PDF。
 图片内容指纹变化时重新识别；私有输入指纹不进入公开快照。每轮最多补齐 4 条图片整理，
 未处理原图继续完整保留，后续检查逐批补齐；图片识别失败不覆盖线上已有内容。
 已整理结果在 Nova `DINGTALK_LOCAL_SUMMARY_FILE` 按消息指纹缓存；

@@ -12,12 +12,18 @@ export function fetchDingTalkGroup(limit = 200, all = false) {
   if (data.schemaVersion !== 2 || data.label !== '击球区观点' || !text(data.syncedAt, 60) || !Number.isFinite(Date.parse(data.syncedAt as string)) ||
       !Number.isInteger(data.duplicateCount) || (data.duplicateCount as number) < 0 || !Array.isArray(data.opinions)) throw new DingTalkSnapshotError('观点摘要格式无效');
   const opinions = data.opinions.map((item: unknown) => {
-    if (!item || typeof item !== 'object' || !exact(item as Record<string, unknown>, ['id', 'time', 'title', 'summary', 'keyPoints', 'caveats', ...(Object.hasOwn(item, 'kind') ? ['kind'] : [])])) throw new DingTalkSnapshotError('观点摘要格式无效');
+    if (!item || typeof item !== 'object' || !exact(item as Record<string, unknown>, ['id', 'time', 'title', 'summary', 'keyPoints', 'caveats', ...(Object.hasOwn(item, 'kind') ? ['kind'] : []), ...(Object.hasOwn(item, 'report') ? ['report'] : [])])) throw new DingTalkSnapshotError('观点摘要格式无效');
     const m = item as Record<string, unknown>;
-    if ((Object.hasOwn(m, 'kind') && m.kind !== 'event' && m.kind !== 'opinion') || typeof m.id !== 'string' || !/^[a-f0-9]{64}$/.test(m.id) || !text(m.time, 60) || !Number.isFinite(Date.parse(m.time as string)) ||
+    if ((Object.hasOwn(m, 'kind') && m.kind !== 'event' && m.kind !== 'opinion' && m.kind !== 'research') || typeof m.id !== 'string' || !/^[a-f0-9]{64}$/.test(m.id) || !text(m.time, 60) || !Number.isFinite(Date.parse(m.time as string)) ||
       !text(m.title, 100) || !text(m.summary, 800) || !Array.isArray(m.keyPoints) || m.keyPoints.length < 1 || m.keyPoints.length > 6 || !m.keyPoints.every((s) => text(s, 240)) ||
       !Array.isArray(m.caveats) || m.caveats.length > 5 || !m.caveats.every((s) => text(s, 240))) throw new DingTalkSnapshotError('观点摘要格式无效');
-    return m as { kind?: 'event' | 'opinion'; id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] };
+    if (Object.hasOwn(m, 'report')) {
+      const r = m.report as Record<string, unknown>;
+      if (m.kind !== 'research' || !r || typeof r !== 'object' || !exact(r, ['publisher', 'title', 'originalText']) ||
+        !text(r.publisher, 120) || !text(r.title, 400) || !text(r.originalText, 20000)) throw new DingTalkSnapshotError('研报原页格式无效');
+    }
+    if (m.kind === 'research' && !Object.hasOwn(m, 'report')) throw new DingTalkSnapshotError('研报来源缺失');
+    return m as { kind?: 'event' | 'opinion' | 'research'; report?: { publisher: string; title: string; originalText: string }; id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] };
   });
   return { schemaVersion: 2, label: '击球区观点', syncedAt: data.syncedAt as string, duplicateCount: data.duplicateCount as number,
     opinions: all ? opinions : opinions.slice(0, Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 200) };

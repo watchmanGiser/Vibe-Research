@@ -58,3 +58,17 @@ test('事件分类兼容旧观点，只允许event或opinion，禁止识别缓�
     }
   } finally { if (prior === undefined) delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE; else process.env.DINGTALK_SEMI_SNAPSHOT_FILE = prior; fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('研报原页来源和识别文字明确标识，未知来源字段和残缺对象拒绝', () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'jqz-research-kind-'));const prior=process.env.DINGTALK_SEMI_SNAPSHOT_FILE;
+  try {
+    const file=process.env.DINGTALK_SEMI_SNAPSHOT_FILE=path.join(root,'feed.json');
+    const research={...opinion,kind:'research',report:{publisher:'摩根士丹利',title:'Takeaways from 2026 OCP Global Summit',originalText:'We expect commercial production to start from 2028 onwards.'}};
+    fs.writeFileSync(file,JSON.stringify({...snapshot,opinions:[opinion,research]}));
+    assert.deepEqual(fetchDingTalkGroup().opinions,[opinion,research]);
+    const {report,...missing}=research;
+    for(const invalid of [missing,{...research,report:{...report,originalUrl:'https://invented.example/report.pdf'}},{...research,report:{...report,originalText:''}},{...research,kind:'opinion'}]) {
+      fs.writeFileSync(file,JSON.stringify({...snapshot,opinions:[invalid]}));assert.throws(()=>fetchDingTalkGroup(),DingTalkSnapshotError);
+    }
+  } finally {if(prior===undefined)delete process.env.DINGTALK_SEMI_SNAPSHOT_FILE;else process.env.DINGTALK_SEMI_SNAPSHOT_FILE=prior;fs.rmSync(root,{recursive:true,force:true});}
+});

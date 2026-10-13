@@ -264,7 +264,7 @@ export function DingTalkGroupPanel() {
           <div className="border-b border-border/60 px-3 py-4 md:p-4">
             <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">整理信息</h3><span className="ml-auto text-[11px] text-muted-foreground">Nova 本地 GPT 整理</span></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">通知、公告等按事件整理；研究判断与预测保留观点属性和必要说明。</p>
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">通知按事件、研报按机构报告内容整理；预测和判断保留原报告口径。</p>
           </div>
           <div className="px-3 py-4 [overflow-wrap:anywhere] md:p-4" aria-label="总结列表">
             {err && <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{err}<p className="mt-1 text-xs">整理信息暂不可用；不能据此判断没有新信息。</p></div>}
@@ -283,11 +283,13 @@ export function DingTalkGroupPanel() {
 type DingTalkSummaryItem = Awaited<ReturnType<typeof api.dingtalkGroup>>["opinions"][number];
 export function DingTalkSummaryCard({ item, onShowOriginal }: { item: DingTalkSummaryItem; onShowOriginal: (id: string) => void }) {
   return (<article className="py-4 first:pt-0 last:pb-0">
-                <div className="mb-2 text-[11px] text-muted-foreground">资料时间 {formatDingTalkTime(item.time)} · {item.kind === "event" ? "事件记录" : "第三方观点，待独立核验"}</div>
+                <div className="mb-2 text-[11px] text-muted-foreground">资料时间 {formatDingTalkTime(item.time)} · {item.kind === "research" ? `研报内容 · ${item.report?.publisher ?? "研究机构"}` : item.kind === "event" ? "事件记录" : "第三方观点，待独立核验"}</div>
                 <h3 className="mb-2 text-base font-semibold">{item.title}</h3>
+                {item.kind === "research" && item.report && <p className="mb-2 text-xs text-muted-foreground">原研报：{item.report.title}</p>}
                 <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6">{item.summary}</p>
                 <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
-                {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" ? "补充说明：" : "风险 / 待核验："}{item.caveats.join("；")}</div>}
-                <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />查看对应原文</button>
+                {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}{item.caveats.join("；")}</div>}
+                <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原页" : "查看对应原文"}</button>
+                {item.kind === "research" && item.report && <details className="mt-3 border-t border-border/50 pt-3"><summary className="cursor-pointer text-xs text-primary">研报原文（所附图片页识别）</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{item.report.originalText}</p></details>}
               </article>);
 }

@@ -24,7 +24,7 @@ import { JianfangPanel } from "./JianfangPanel";
 const TABS = [
   { key: "semi", label: "X平台帐号跟踪", icon: Rss, integrated: true, desc: "X平台帐号动态与中文整理" },
   { key: "jianfang", label: "简放", icon: Lightbulb, integrated: true, desc: "交易者简放的公开微博、长文与转发内容" },
-  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文、事件记录与观点整理" },
+  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文、事件记录、研报内容与观点整理" },
   { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
   { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
   { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
