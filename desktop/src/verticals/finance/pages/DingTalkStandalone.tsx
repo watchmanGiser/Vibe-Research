@@ -12,12 +12,12 @@ export function DingTalkStandalone() {
     storageSet("vra-theme", theme);
   }, [theme]);
   return (
-    <main aria-label="击球区情报" className="mx-auto min-h-screen max-w-[1920px] px-3 py-4 sm:px-6 sm:py-5">
+    <main aria-label="击球区 消息" className="mx-auto min-h-screen max-w-[1920px] px-3 py-4 sm:px-6 sm:py-5">
       <header className="mb-5 flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10"><Lightbulb className="h-6 w-6 text-primary" /></span>
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">击球区情报</h1>
+            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">击球区 消息</h1>
             <p className="mt-1 text-xs text-muted-foreground sm:text-sm">原始消息完整归档，观点总结同步浏览</p>
           </div>
         </div>

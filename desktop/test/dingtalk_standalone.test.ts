@@ -7,7 +7,7 @@ test('独立情报页提供两栏、历史搜索和主题切换，不包含个�
     const { DingTalkStandalone } = await r.load('/src/verticals/finance/pages/DingTalkStandalone.tsx');
     const html = r.html(DingTalkStandalone, {});
     const text = textOf(html);
-    assert.match(text, /击球区情报/);
+    assert.match(text, /击球区 消息/);
     assert.match(text, /原始消息/);
     assert.match(text, /观点总结/);
     assert.match(html, /aria-label="搜索原始消息"/);
