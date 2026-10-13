@@ -91,7 +91,23 @@ require('node:fs').appendFileSync(process.env.TEST_CALLS, process.argv.at(-1).in
     await publishRawFeed(env);
     assert.equal(fs.readFileSync(calls, 'utf8'), 'images-upload\nimages-publish\nfeed-upload\nfeed-publish\n');
     fs.writeFileSync(calls, '');
+    fs.writeFileSync(source, JSON.stringify(snapshot([message('a', '原文[图片消息](mediaId=@cached-image)'), message('new', '新增内容')] )));
     await assert.rejects(() => publishRawFeed({ ...env, TEST_FAIL_IMAGES: '1' }));
     assert.equal(fs.readFileSync(calls, 'utf8'), 'images-upload\n');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('只有重复到达时不再上传原文，首次时间和关联记录保留', async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'jqz-no-republish-'));
+ try {
+  const bin=path.join(dir,'bin');fs.mkdirSync(bin);const source=path.join(dir,'raw.json'),key=path.join(dir,'key'),calls=path.join(dir,'calls');fs.writeFileSync(key,'test-key');
+  for(const tool of ['scp','ssh'])fs.writeFileSync(path.join(bin,tool),`#!/usr/bin/env node\nrequire('node:fs').appendFileSync(process.env.TEST_CALLS,'${tool}\\n');\n`,{mode:0o700});
+  const env={...process.env,PATH:`${bin}:${process.env.PATH}`,DINGTALK_LOCAL_SNAPSHOT_FILE:source,DINGTALK_CONVERSATION_ID:'private-conversation',DINGTALK_PUSH_HOST:'example.test',DINGTALK_PUSH_SSH_KEY:key,TEST_CALLS:calls};
+  const first=message('first','业务纪要。'.repeat(40)+'订单1000台，客户（剑桥）光模块 NPO项目。');
+  fs.writeFileSync(source,JSON.stringify(snapshot([first])));await publishRawFeed(env);const before=fs.readFileSync(calls,'utf8');
+  const copy=message('later',first.text.replace('剑桥','剑桥思科一体').replaceAll('。','。\n\n'),{time:'2026-10-13 11:00:00'});
+  fs.writeFileSync(source,JSON.stringify({...snapshot([first,copy]),syncedAt:'2026-10-13T04:00:00Z'}));await publishRawFeed(env);
+  assert.equal(fs.readFileSync(calls,'utf8'),before,'重复消息不触发上传');
+  const result=buildRawFeed(snapshot([copy,first]),'private-conversation');assert.equal(result.messages.length,1);assert.equal(result.messages[0].time,first.time);assert.equal(result.messages[0].relatedIds.length,2);assert.equal(result.messages[0].versions[0].text,copy.text);
+ } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });

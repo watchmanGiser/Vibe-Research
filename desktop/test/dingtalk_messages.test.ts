@@ -59,3 +59,13 @@ test('图片描述保留，危险地址和尚未获取的原图不会作为图�
     assert.doesNotMatch(html, /<img |javascript:|data:text/);
   });
 });
+
+test('合并消息保留可查看的其他原始版本、发送时间和全部配图，采用整页展开', async () => {
+  await withRenderer(async r => {
+    const { DingTalkMessageCard } = await r.load('/src/verticals/finance/pages/SemiPanels.tsx');
+    const html = r.html(DingTalkMessageCard, { item: { id: 'a'.repeat(64), time: '2026-10-13 10:00:00', sender: '首发', text: '首次原稿', duplicateCount: 1, relatedIds: ['a'.repeat(64),'b'.repeat(64)], latestDuplicateTime: '2026-10-13 11:00:00', versions: [{id:'b'.repeat(64),time:'2026-10-13 11:00:00',sender:'转发',text:'补充版本[图片消息](mediaId=@other)',images:[{reference:'@other',url:`/dingtalk/media/${'c'.repeat(64)}.jpg`}]}] } });
+    assert.match(textOf(html), /查看其他原始版本（1 份）/);assert.match(textOf(html), /补充版本/);assert.match(textOf(html), /11:00:00/);
+    assert.equal((html.match(/data-message-id=/g)||[]).length,1);assert.match(html, /<details/);assert.match(html, /<img /);
+    assert.doesNotMatch(html, /overflow-y-auto|max-h-\[|上一页|下一页/);
+  });
+});

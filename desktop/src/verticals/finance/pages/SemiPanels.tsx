@@ -144,6 +144,19 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
       {content.images.length > 0 && <div className={cn("mt-3 grid items-start gap-3", content.images.length > 1 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {content.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={item.sender} index={index} />)}
       </div>}
+      {!!item.versions?.length && <details open={defaultExpanded} className="mt-3 border-t border-border/50 pt-3">
+        <summary className="cursor-pointer text-xs font-medium text-primary">查看其他原始版本（{item.versions.length} 份）</summary>
+        <div className="mt-3 space-y-4">{item.versions.map(version => {
+          const original = dingTalkContent(version.text, version.images);
+          return <div key={version.id} className="border-t border-border/40 pt-3" data-original-version={version.id}>
+            <div className="mb-2 text-xs text-muted-foreground">{version.sender} · {formatDingTalkTime(version.time)}</div>
+            {original.text && <p className="whitespace-pre-wrap break-words text-base leading-7 [overflow-wrap:anywhere] md:text-sm md:leading-6">{original.text}</p>}
+            {!!original.images.length && <div className={cn("mt-3 grid gap-3", original.images.length > 1 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
+              {original.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={version.sender} index={index} />)}
+            </div>}
+          </div>;
+        })}</div>
+      </details>}
     </article>
   );
 }

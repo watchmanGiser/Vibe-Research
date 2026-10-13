@@ -7,9 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cacheMessageImages, messageImageReferences } from './dingtalk-media.mjs';
+import { mergeMessageHistory, normalizedMessageText, validateArchivedMessage } from './dingtalk-duplicates.mjs';
 
 const hash = (s) => createHash('sha256').update(s).digest('hex');
-export const normalizedMessageText = (s) => s.normalize('NFC').replace(/\r\n?/g, '\n').split('\n').map(line => line.trimEnd()).join('\n').trim();
+export { normalizedMessageText };
 const validText = (s) => typeof s === 'string' && s.trim().length > 0;
 const timestamp = (s) => Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? s.replace(' ', 'T') + '+08:00' : s);
 
@@ -18,37 +19,20 @@ export function buildRawFeed(raw, expectedConversationId, images = new Map()) {
       !validText(raw.syncedAt) || !Number.isFinite(timestamp(raw.syncedAt)) || !Number.isInteger(raw.duplicateCount) || raw.duplicateCount < 0) {
     throw Error('本地原文快照身份或格式无效，保留线上快照');
   }
-  const byText = new Map();
-  const seenIds = new Set();
-  let merged = 0;
-  for (const m of raw.messages) {
-    if (!m || !validText(m.messageId) || !validText(m.text) || !validText(m.time) || !Number.isFinite(timestamp(m.time)) ||
-        !validText(m.sender) || !Number.isInteger(m.duplicateCount) || m.duplicateCount < 0 ||
-        (m.duplicateMessageIds !== undefined && (!Array.isArray(m.duplicateMessageIds) || !m.duplicateMessageIds.every(validText))) ||
-        (m.latestDuplicateTime !== undefined && (!validText(m.latestDuplicateTime) || !Number.isFinite(timestamp(m.latestDuplicateTime))))) {
-      throw Error('本地原文消息格式无效，保留线上快照');
-    }
-    const id = hash(m.messageId);
-    if (seenIds.has(id)) continue;
-    seenIds.add(id);
-    const relatedIds = [...new Set([id, ...(m.duplicateMessageIds || []).map(hash)])];
-    const key = hash(normalizedMessageText(m.text));
-    const existing = byText.get(key);
-    if (existing) {
-      existing.duplicateCount += 1 + m.duplicateCount;
-      existing.relatedIds = [...new Set([...existing.relatedIds, ...relatedIds])];
-      for (const time of [m.time, m.latestDuplicateTime].filter(Boolean)) {
-        if (timestamp(time) > timestamp(existing.latestDuplicateTime || existing.time)) existing.latestDuplicateTime = time;
-      }
-      merged++;
-    } else {
-      byText.set(key, { id, time: m.time, sender: m.sender, text: m.text, duplicateCount: m.duplicateCount,
-        relatedIds, latestDuplicateTime: m.latestDuplicateTime || null,
-        ...(messageImageReferences(m.text).some(reference => images.has(reference)) ? { images: messageImageReferences(m.text).filter(reference => images.has(reference)).map(reference => ({ reference, url: images.get(reference) })) } : {}) });
-    }
-  }
-  const messages = [...byText.values()].sort((a, b) => timestamp(b.time) - timestamp(a.time) || a.id.localeCompare(b.id));
-  const duplicateCount = Math.max(raw.duplicateCount + merged, messages.reduce((sum, m) => sum + m.duplicateCount, 0));
+  for (const message of raw.messages) validateArchivedMessage(message);
+  const history = mergeMessageHistory(raw.messages);
+  const sourceImages = text => messageImageReferences(text).filter(reference => images.has(reference)).map(reference => ({ reference, url: images.get(reference) }));
+  const messages = history.messages.map(message => {
+    const id = hash(message.messageId);
+    const relatedIds = [...new Set([id, ...(message.duplicateMessageIds || []).map(hash), ...(message.duplicateSources || []).map(source => hash(source.messageId))])];
+    const attached = sourceImages(message.text);
+    const versions = (message.duplicateSources || []).map(source => ({ id: hash(source.messageId), time: source.time, sender: source.sender, text: source.text,
+      ...(sourceImages(source.text).length ? { images: sourceImages(source.text) } : {}) }));
+    return { id, time: message.time, sender: message.sender, text: message.text, duplicateCount: message.duplicateCount,
+      relatedIds, latestDuplicateTime: message.latestDuplicateTime || null,
+      ...(attached.length ? { images: attached } : {}), ...(versions.length ? { versions } : {}) };
+  });
+  const duplicateCount = Math.max(raw.duplicateCount, history.duplicateCount);
   return { schemaVersion: 1, label: '击球区原始消息', syncedAt: raw.syncedAt, duplicateCount, messages };
 }
 
@@ -68,6 +52,15 @@ export async function publishRawFeed(env = process.env) {
   if (!/^\/opt\/vibe-research\/shared\/semi\/[A-Za-z0-9._-]+$/.test(remote) || remote === (env.DINGTALK_REMOTE_SNAPSHOT_FILE || '/opt/vibe-research/shared/semi/dingtalk.json')) throw Error('原文与摘要必须使用独立快照');
   const media = await cacheMessageImages(raw, env);
   feed = buildRawFeed(raw, env.DINGTALK_CONVERSATION_ID, media.images);
+  const stateFile = `${source}.published-content.json`;
+  const targetHash = hash(JSON.stringify([env.DINGTALK_CONVERSATION_ID, host, user, remote]));
+  const contentHash = hash(JSON.stringify(feed.messages.map(({ id, time, sender, text, images, versions }) => ({ id, time, sender, text, images, versionImages: [...new Set((versions || []).flatMap(version => (version.images || []).map(image => image.url)))].sort() }))));
+  try {
+    const previous = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    if (previous.contentHash === contentHash && previous.targetHash === targetHash) {
+      console.log(JSON.stringify({ skipped: true, reason: 'no-new-content', messages: feed.messages.length }));return;
+    }
+  } catch { /* 首次发布或旧状态无效时重新校验上传。 */ }
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-raw-publish-'));
   const run = (bin, args) => {
     const result = spawnSync(bin, args, { encoding: 'utf8', timeout: 120000, maxBuffer: 1024 * 1024, env });
@@ -90,6 +83,9 @@ export async function publishRawFeed(env = process.env) {
     }
     run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
     run('ssh', [...sshArgs, `${user}@${host}`, `test -s '${dest}' && chmod 0640 '${dest}' && mv -f -- '${dest}' '${remote}'`]);
+    const stateTemp = `${stateFile}.${process.pid}.tmp`;
+    fs.writeFileSync(stateTemp, JSON.stringify({ contentHash, targetHash }) + '\n', { mode: 0o600 });
+    fs.renameSync(stateTemp, stateFile);
     console.log(JSON.stringify({ pushed: true, messages: feed.messages.length, duplicateCount: feed.duplicateCount, syncedAt: feed.syncedAt, images: media.ready, unavailableImages: media.unavailable }));
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });

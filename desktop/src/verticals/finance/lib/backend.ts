@@ -295,7 +295,7 @@ export const backend = {
     return call<{
       schemaVersion: 1; label: string; syncedAt: string; duplicateCount: number; total: number; filteredTotal: number;
       offset: number; limit: number; hasMore: boolean;
-      messages: Array<{ id: string; time: string; sender: string; text: string; duplicateCount: number; relatedIds: string[]; latestDuplicateTime: string | null; images?: Array<{ reference: string; url: string }> }>;
+      messages: Array<{ id: string; time: string; sender: string; text: string; duplicateCount: number; relatedIds: string[]; latestDuplicateTime: string | null; images?: Array<{ reference: string; url: string }>; versions?: Array<{ id: string; time: string; sender: string; text: string; images?: Array<{ reference: string; url: string }> }> }>;
     }>(`/semi/dingtalk?${query}`);
   },
   semiStatus: () => call<{

@@ -120,3 +120,17 @@ test('兼容无配图的旧原文；仅接受原文对应的本站图片路径�
     }
   });
 });
+
+test('原始版本保留、可搜索且可沿重复 ID 定位；拒绝版本中的私有字段', async()=>{
+ await withSnapshot(file=>{
+  const primary=message(1),copy=message(2);
+  const version={id:copy.id,time:copy.time,sender:'其他发送者',text:'括号补充内容'};
+  const item={...primary,relatedIds:[primary.id,copy.id],versions:[version]};
+  fs.writeFileSync(file,JSON.stringify(snapshot([item])));
+  assert.deepEqual(fetchDingTalkMessages(new URLSearchParams({id:copy.id})).messages[0]!.versions,[version]);
+  assert.equal(fetchDingTalkMessages(new URLSearchParams({q:'括号补充'})).messages.length,1);
+  for(const versions of [[{...version,conversationId:'private'}],[{...version,id:id('unrelated')}],[{...version,time:'invalid'}]]){
+   const invalid={...item,versions};fs.writeFileSync(file,JSON.stringify(snapshot([invalid])));assert.throws(()=>fetchDingTalkMessages(),DingTalkSnapshotError);
+  }
+ });
+});

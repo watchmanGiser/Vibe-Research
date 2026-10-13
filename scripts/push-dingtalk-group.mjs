@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergeMessageHistory } from './dingtalk-duplicates.mjs';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const rawFile = process.env.DINGTALK_LOCAL_SNAPSHOT_FILE || path.join(os.homedir(), '.local/share/vibe-research/dingtalk.json');
@@ -74,8 +75,12 @@ function summarize(text, original = text) {
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
 fs.mkdirSync(path.dirname(rawFile), { recursive: true, mode: 0o700 });
-run(process.execPath, [path.join(dir, 'sync-dingtalk-group.mjs')], { env: { ...process.env, DINGTALK_SEMI_SNAPSHOT_FILE: rawFile } });
-const raw = JSON.parse(fs.readFileSync(rawFile, 'utf8'));
+// 维护重发只读取已核验的原始存档，不伪造同步结果，也不启动新的模型任务。
+if (process.env.DINGTALK_REPUBLISH_ONLY !== '1') run(process.execPath, [path.join(dir, 'sync-dingtalk-group.mjs')], { env: { ...process.env, DINGTALK_SEMI_SNAPSHOT_FILE: rawFile } });
+const snapshot = JSON.parse(fs.readFileSync(rawFile, 'utf8'));
+if (!snapshot || !Array.isArray(snapshot.messages)) throw Error('本地原文快照格式无效');
+const mergedHistory = mergeMessageHistory(snapshot.messages);
+const raw = { ...snapshot, messages: mergedHistory.messages, duplicateCount: Math.max(snapshot.duplicateCount || 0, mergedHistory.duplicateCount) };
 if (raw.conversationId !== process.env.DINGTALK_CONVERSATION_ID || !Array.isArray(raw.messages) || !Number.isFinite(Date.parse(raw.syncedAt))) throw Error('本地原文快照身份或格式无效');
 let prior = { entries: {} };
 try { prior = JSON.parse(fs.readFileSync(summaryFile, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -88,6 +93,7 @@ for (const m of raw.messages) {
   if (m.text.length > 200000) throw Error('超长资料超出安全分段上限，保留原文待人工分段');
   const id = hash(m.messageId); const textHash = hash(m.text);
   if (!entries[id] || entries[id].textHash !== textHash) {
+    if (process.env.DINGTALK_REPUBLISH_ONLY === '1') throw Error('首次记录缺少可复用的总结，保留线上快照');
     const chunks = m.text.match(/[\s\S]{1,9000}/g) || [];
     const parts = chunks.map((chunk, i) => summarize(`第${i+1}/${chunks.length}段：\n${chunk}`, m.text));
     const merged = parts.length === 1 ? parts[0] : summarize(`以下是同一篇资料各段摘要，请合并主题、观点及待核验风险，不能补充或编造：\n${JSON.stringify(parts)}`, m.text);
@@ -108,6 +114,15 @@ if (process.env.DINGTALK_SUMMARY_ONLY === '1') {
   console.log(JSON.stringify({ summarizedLocally: true, count: opinions.length }));
   process.exit(0);
 }
+const stateFile = `${summaryFile}.published-content.json`;
+const targetHash = hash(JSON.stringify([process.env.DINGTALK_CONVERSATION_ID, host, user, remote]));
+const contentHash = hash(JSON.stringify(publicFeed.opinions));
+try {
+  const previous = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  if (previous.contentHash === contentHash && previous.targetHash === targetHash) {
+    console.log(JSON.stringify({ skipped: true, reason: 'no-new-content', summaries: opinions.length }));process.exit(0);
+  }
+} catch { /* 首次发布或旧状态无效时继续上传。 */ }
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-publish-'));
 try {
   fs.chmodSync(stage, 0o700);
@@ -116,5 +131,6 @@ try {
   const sshArgs = ['-F', '/dev/null', '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15', '-i', key];
   run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
   run('ssh', [...sshArgs, `${user}@${host}`, `test -s '${dest}' && chmod 0640 '${dest}' && mv -f -- '${dest}' '${remote}'`]);
+  save(stateFile, { contentHash, targetHash });
   console.log(JSON.stringify({ pushed: true, summaries: opinions.length, at: new Date().toISOString() }));
 } finally { fs.rmSync(stage, { recursive: true, force: true }); }

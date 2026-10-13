@@ -3,7 +3,7 @@
  * 每次读取指定群最近窗口，并在共享快照中按消息 ID 与长文本指纹去重。
  * 不保存 DWS 原始响应、凭据或 reaction；仅接受完整查询，避免部分分页覆盖进度。
  */
-import { createHash } from "node:crypto";
+import { mergeMessageHistory } from "./dingtalk-duplicates.mjs";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,9 +16,6 @@ const snapshotFile = process.env.DINGTALK_SEMI_SNAPSHOT_FILE || path.join(os.hom
 const dws = process.env.DWS_BIN || "dws";
 const now = new Date();
 const iso = (date) => date.toISOString();
-// 保留标点、数字与单位差异，只消除换行格式和行末空白。
-const norm = (text) => text.normalize("NFC").replace(/\r\n?/g, "\n").split("\n").map(line => line.trimEnd()).join("\n").trim();
-const fingerprint = (text) => createHash("sha256").update(norm(text)).digest("hex");
 
 let old = null;
 try { old = JSON.parse(fs.readFileSync(snapshotFile, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw e; }
@@ -41,39 +38,12 @@ if (response.messages.some((m) => !m || m.conversationId !== expectedConversatio
   throw new Error("会话身份校验失败，保留旧快照");
 }
 
-const byId = new Map((old?.messages || []).map((m) => [m.messageId, m]));
-const seenIds = new Set();
-for (const m of byId.values()) { seenIds.add(m.messageId); for (const id of m.duplicateMessageIds || []) seenIds.add(id); }
-const byFingerprint = new Map();
-for (const m of byId.values()) if (norm(m.text).length >= 100) byFingerprint.set(fingerprint(m.text), m);
-let duplicatesThisRun = 0;
-for (const source of response.messages) {
-  const messageId = String(source.messageId || "");
-  const text = typeof source.text === "string" ? source.text.trim() : "";
-  if (!messageId || !text || seenIds.has(messageId)) continue;
-  const fp = norm(text).length >= 100 ? fingerprint(text) : "";
-  const duplicate = fp ? byFingerprint.get(fp) : null;
-  if (duplicate) {
-    duplicate.duplicateCount = (duplicate.duplicateCount || 0) + 1;
-    duplicate.duplicateMessageIds = [...new Set([...(duplicate.duplicateMessageIds || []), messageId])];
-    seenIds.add(messageId);
-    if (source.createTime > duplicate.time) duplicate.latestDuplicateTime = source.createTime;
-    duplicatesThisRun++;
-    continue;
-  }
-  const message = {
-    messageId,
-    time: String(source.createTime || ""),
-    sender: String(source.sender || "未知发送者"),
-    text,
-    duplicateCount: 0,
-  };
-  byId.set(messageId, message);
-  seenIds.add(messageId);
-  if (fp) byFingerprint.set(fp, message);
-}
-// 原始归档不按展示窗口删除历史消息，供原文展示与总结追溯。
-const messages = [...byId.values()].sort((a, b) => b.time.localeCompare(a.time));
+const incoming = response.messages.filter(source => typeof source.messageId === "string" && typeof source.text === "string" && source.text.trim()).map(source => ({
+  messageId: source.messageId, time: String(source.createTime || ""), sender: String(source.sender || "未知发送者"), text: source.text.trim(), duplicateCount: 0,
+}));
+const resultHistory = mergeMessageHistory(old?.messages || [], incoming);
+const messages = resultHistory.messages;
+
 const snapshot = {
   group,
   conversationId: expectedConversationId,
@@ -81,11 +51,11 @@ const snapshot = {
   windowStart: start.toISOString(),
   windowEnd: iso(now),
   receivedCount: response.messages.length,
-  duplicateCount: (old?.duplicateCount || 0) + duplicatesThisRun,
+  duplicateCount: Math.max(old?.duplicateCount || 0, resultHistory.duplicateCount),
   messages,
 };
 fs.mkdirSync(path.dirname(snapshotFile), { recursive: true, mode: 0o700 });
 const temp = `${snapshotFile}.${process.pid}.tmp`;
 fs.writeFileSync(temp, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
 fs.renameSync(temp, snapshotFile);
-console.log(JSON.stringify({ group, received: response.messages.length, stored: messages.length, duplicatesThisRun, syncedAt: snapshot.syncedAt }));
+console.log(JSON.stringify({ group, added: resultHistory.added, received: response.messages.length, stored: messages.length, duplicatesThisRun: resultHistory.merged, syncedAt: snapshot.syncedAt }));

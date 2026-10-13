@@ -33,7 +33,7 @@ export async function cacheMessageImages(raw, env = process.env) {
   if (raw.conversationId !== env.DINGTALK_CONVERSATION_ID) throw Error('图片归档会话不匹配');
   const directory = env.DINGTALK_MEDIA_CACHE_DIR || path.join(os.homedir(), '.local/share/vibe-research/dingtalk-media');
   const sources = new Map();
-  for (const message of raw.messages) for (const reference of messageImageReferences(message.text)) sources.set(reference, message.messageId);
+  for (const message of raw.messages.flatMap(item => [item, ...(item.duplicateSources || [])])) for (const reference of messageImageReferences(message.text)) sources.set(reference, message.messageId);
   if (!sources.size) return { directory, images: new Map(), filenames: [], total: 0, ready: 0, unavailable: 0, downloadFailures: 0 };
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const indexFile = path.join(directory, 'index.json');
