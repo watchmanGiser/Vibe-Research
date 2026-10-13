@@ -25,21 +25,30 @@ test("远端发布只为 Nginx 开放静态构建目录", () => {
 });
 
 
-test("钉钉群结果路由必须要求站点账号且禁用缓存", () => {
+test("钉钉页面及原文总结公开只读，通用数据接口仍要求认证", () => {
   const nginx = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research.nginx.conf"), "utf8");
   const route = nginx.match(/location = \/vibe-research\/api\/semi\/dingtalk \{([\s\S]*?)\n\}/)?.[1];
-  assert.ok(route, "必须使用精确匹配的专用路由，不能公开落入通用 API 路由");
-  assert.match(route, /auth_basic "/);
-  assert.match(route, /auth_basic_user_file \/etc\/nginx\/\.htpasswd-vibe-research;/);
+  assert.ok(route, "原文和总结必须走专用精确路由");
+  assert.match(route, /auth_basic off;/);
+  assert.doesNotMatch(route, /auth_basic_user_file/);
   assert.match(route, /include \/etc\/nginx\/snippets\/vibe-research-auth\.nginx\.conf;/);
   assert.match(route, /proxy_pass http:\/\/127\.0\.0\.1:8092\/semi\/dingtalk;/);
   assert.match(route, /Cache-Control "private, no-store"/);
+  const page = nginx.match(/location = \/vibe-research\/intel\/dingtalk \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(page);
+  assert.match(page, /auth_basic off;/);
+  assert.match(page, /alias \/opt\/vibe-research\/app\/desktop\/dist\/index\.html;/);
+  const api = nginx.match(/location \^~ \/vibe-research\/api\/ \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(api);
+  assert.match(api, /auth_basic "Vibe Research";/);
+  assert.match(api, /vra_dingtalk_public_visitor = 1\) \{ return 403;/);
 });
 
-test("Nova 原文定时器只能调用本地同步脚本，绝不执行推送", () => {
+test("Nova 原文定时器同步后调用独立原文发布入口", () => {
   const service = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research-dingtalk-raw.service"), "utf8");
   const timer = fs.readFileSync(path.join(repoRoot, "deploy", "vibe-research-dingtalk-raw.timer"), "utf8");
   assert.match(service, /ExecStart=.*sync-dingtalk-group\.mjs/);
+  assert.match(service, /ExecStartPost=.*publish-dingtalk-raw\.mjs/);
   assert.doesNotMatch(service, /push-dingtalk-group|scp|ssh/);
   assert.match(timer, /Unit=vibe-research-dingtalk-raw\.service/);
 });

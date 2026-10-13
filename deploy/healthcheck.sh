@@ -35,10 +35,21 @@ for _ in range(6):
     time.sleep(1)
 if health is None:
     raise SystemExit("健康检查失败：公网探针不可用")
-for path in ["/", "/api/runs", "/api/ledger?kind=position", "/api/semi/dingtalk"]:
+for path in ["/", "/api/runs", "/api/ledger?kind=position"]:
     status, _ = request(path)
     if status != 401:
         raise SystemExit("健康检查失败：私有页面或接口未要求站点认证")
+status, public_page = request("/intel/dingtalk")
+if status != 200 or b'id="root"' not in public_page:
+    raise SystemExit("健康检查失败：公开钉钉页面不可用")
+for path, schema, collection in [("/api/semi/dingtalk", 2, "opinions"), ("/api/semi/dingtalk?view=messages", 1, "messages")]:
+    status, raw = request(path)
+    try:
+        feed = json.loads(raw)
+    except (ValueError, TypeError):
+        raise SystemExit("健康检查失败：公开消息接口返回无效内容")
+    if status != 200 or feed.get("schemaVersion") != schema or not isinstance(feed.get(collection), list):
+        raise SystemExit("健康检查失败：公开原文或总结不可用")
 app = pathlib.Path("/opt/vibe-research/app")
 html = (app / "desktop/dist/index.html").read_text()
 if "/vibe-research/assets/" not in html:
@@ -52,5 +63,5 @@ if expected:
     version = json.loads((app / "orchestrator/package.json").read_text())["version"]
     if health.get("version") != version:
         raise SystemExit("健康检查失败：API 版本不匹配")
-print("健康检查通过：" + json.dumps({"ok": True, "version": health.get("version"), "private_routes": "authenticated"}, ensure_ascii=False))
+print("健康检查通过：" + json.dumps({"ok": True, "version": health.get("version"), "private_routes": "authenticated", "public_dingtalk": "available"}, ensure_ascii=False))
 PY

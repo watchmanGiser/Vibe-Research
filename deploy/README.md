@@ -55,8 +55,11 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 
 页面「资讯雷达 → 击球区观点」分列展示完整去重原文和现有总结，窄屏上下排列。
 原文支持全历史全文搜索、分页和展开全文；总结保留主题、概述、要点及风险，并可定位对应原文。
-两栏使用同一个受 Nginx Basic Auth 保护、禁止缓存的只读 `/semi/dingtalk` 接口，
+用户于 2026-10-13 指定钉钉页免登录访问：`/intel/dingtalk` 及其前端静态资源公开，
+两栏使用同一个公开、禁止缓存的只读 `/semi/dingtalk` 接口，
 原文请求通过 `view=messages` 区分，并支持 `limit`、`offset`、`q`、`id`；分页不删除历史。
+其他页面、台账、模型配置和写入接口继续由站点认证保护；公开页匿名加载辅助请求时返回 403，
+避免浏览器自动弹出密码框。内部 Bearer 令牌仍仅由 Nginx 注入，不下发浏览器。
 
 Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟运行
 `scripts/sync-dingtalk-group.mjs`，将消息同步并去重保存到权限受限的本地存档。
