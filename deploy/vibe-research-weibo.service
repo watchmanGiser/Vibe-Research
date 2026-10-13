@@ -1,0 +1,16 @@
+[Unit]
+Description=Collect Jianfang public Weibo on Nova and publish snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/lib/vibe-research-weibo
+EnvironmentFile=%h/.config/vibe-research/weibo.env
+ExecStart=/usr/bin/flock -n %h/.local/share/vibe-research/weibo/collect.lock /usr/bin/node %h/.local/lib/vibe-research-weibo/collect-weibo.mjs
+TimeoutStartSec=8min
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20

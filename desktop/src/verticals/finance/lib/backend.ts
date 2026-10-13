@@ -12,6 +12,7 @@
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
 import { apiUrl } from "./api-base.ts";
+import type { JianfangFeed } from "./weibo.ts";
 import { readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts";
 import type { ImportResult } from "./importPositions.ts";
 import type { NotifyOverview } from "./notify.ts";
@@ -268,6 +269,11 @@ async function ensureSelectedLocalAgentReady(llm: unknown, signal?: AbortSignal)
 }
 
 export const backend = {
+  jianfang: (options: { limit?: number; offset?: number; q?: string } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });
+    if (options.q) query.set('q', options.q);
+    return call<JianfangFeed>(`/weibo/jianfang?${query}`);
+  },
   semiTweets: (limit = 100) => call<{
     source: string; count: number; total: number; translated: number; pushed_at?: string; transport?: string;
     items: Array<{

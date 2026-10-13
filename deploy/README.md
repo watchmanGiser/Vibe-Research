@@ -87,3 +87,13 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 30 分钟
 模型推理可能通过配置的供应商服务执行，原有 `DINGTALK_GPT_PROVIDER_APPROVED=1` 许可要求继续仅适用于总结流水线。
 服务器不安装 DWS 或模型，原文与摘要异常分别提示，不以某一栏失败判定另一栏没有数据。
 上线前备份代码、本地存档和流水线配置；不得删除生产 `.local`，版本与回滚遵循上述生产发布规则。
+
+## 简放微博（Nova 采集、广州只读展示）
+
+「资讯雷达 → 简放」对应 `/intel/jianfang`，来源为交易者简放的公开微博（UID `1357064103`）。Nova 的 `vibe-research-weibo.timer` 每 15 分钟运行一次，使用独立匿名 Chrome 会话读取移动版公开时间线，并补取长微博及转发全文。匿名公开接口目前可读最近一页（约 10 条及置顶）；已有记录按微博 ID 累积保存，不将它声称为账号的全历史。置顶内容仍按实际发布时间排序。无法取得全文时明确标注节选，失败时保留已取得的完整正文。
+
+采集程序及锁定依赖在 `scripts/weibo/`。运行时安装到 Nova `~/.local/lib/vibe-research-weibo/`，执行 `npm ci --ignore-scripts`；Chrome 路径由 `WEIBO_BROWSER` 指定，默认 `/opt/google/chrome/chrome`。服务模板在 `deploy/vibe-research-weibo.{service,timer}`，安装到 `~/.config/systemd/user/`。使用 systemd 用户服务与 linger 实现注销、重启恢复；日志由 journald 轮转。
+
+私有环境文件为 `~/.config/vibe-research/weibo.env`（权限 600），可配置 `WEIBO_STATE_DIR`、`WEIBO_BROWSER`、`WEIBO_PUSH_HOST`、`WEIBO_PUSH_USER`、`WEIBO_PUSH_SSH_KEY`。仅记录密钥路径，禁止写入密钥内容或登录 Cookie。采集使用独立匿名访客会话，不访问个人浏览器资料。
+
+原始响应存于 Nova `~/.local/share/vibe-research/weibo/raw/日期/`，累积规范化记录为 `jianfang.json`，推送健康记录为 `last-publish.json`。广州快照为 `/opt/vibe-research/shared/weibo/jianfang.json`，由 SSH 上传临时文件后原子替换。线上 `/weibo/jianfang` 只读该快照，沿用工作台鉴权；可用 `JIANFANG_SNAPSHOT_FILE` 指定隔离测试文件。页面保留原文、转发作者、图片链接、北京时间和原帖链接；刷新按钮只刷新展示，页面每分钟检查新推送。最近成功同步超过 45 分钟时显示存档提示。

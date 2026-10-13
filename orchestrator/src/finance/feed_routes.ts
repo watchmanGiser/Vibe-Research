@@ -3,11 +3,12 @@ import { ApiExtensionError, registerReadOnlyEndpoint } from "../api_extensions.t
 import { fetchSemi, SemiUpstreamError } from "./semi.ts";
 import { fetchDingTalkGroup, DingTalkSnapshotError } from "./dingtalk_semi.ts";
 import { fetchDingTalkMessages } from "./dingtalk_raw.ts";
+import { fetchJianfang, WeiboSnapshotError } from "./weibo.ts";
 
 const handled = (fn: (query: URLSearchParams) => unknown | Promise<unknown>) => async (query: URLSearchParams) => {
   try { return await fn(query); }
   catch (error) {
-    if (error instanceof SemiUpstreamError || error instanceof DingTalkSnapshotError) {
+    if (error instanceof SemiUpstreamError || error instanceof DingTalkSnapshotError || error instanceof WeiboSnapshotError) {
       throw new ApiExtensionError(error.message, error.status);
     }
     throw error;
@@ -18,3 +19,5 @@ registerReadOnlyEndpoint("/semi/status", handled(() => fetchSemi("/api/status"))
 registerReadOnlyEndpoint("/semi/tweets", handled((query) => fetchSemi("/api/tweets", query)));
 registerReadOnlyEndpoint("/semi/dingtalk", handled((query) => query.get("view") === "messages"
   ? fetchDingTalkMessages(query) : fetchDingTalkGroup(Number(query.get("limit") ?? 200))));
+
+registerReadOnlyEndpoint("/weibo/jianfang", handled((query) => fetchJianfang(query)));
