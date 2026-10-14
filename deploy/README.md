@@ -79,7 +79,8 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟
 `DINGTALK_RAW_PUBLISH_ONLY=1` 可仅校验本地存档、不上传。
 
 独立的 `deploy/vibe-research-dingtalk-push.timer` 每 10 分钟触发既有推送服务，
-由 `scripts/push-dingtalk-group.mjs` 整理超过 120 字的观点。两个定时器关闭随机延迟，
+由 `scripts/push-dingtalk-group.mjs` 消费原文服务已验证的存档并整理超过 120 字的观点。生产启用
+`DINGTALK_USE_ARCHIVE=1`，避免重复查询及采集临时失败阻断整理队列。两个定时器关闭随机延迟，
 调度精度为 1 秒；没有新增内容时跳过重复发布。
 模型提供方许可、输出白名单、摘要缓存和失败禁止覆盖规则保持生效；
 总结独立写入 `/opt/vibe-research/shared/semi/dingtalk.json`，与原文文件互不覆盖。
