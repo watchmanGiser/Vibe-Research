@@ -27,7 +27,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached
     const env = {...process.env,DINGTALK_USE_ARCHIVE:'1',DINGTALK_GPT_PROVIDER_APPROVED:'1',DINGTALK_GPT_BIN:path.join(bin,'gpt'),DINGTALK_CONVERSATION_ID:raw.conversationId,
       DINGTALK_PUSH_HOST:'fixture.invalid',DINGTALK_PUSH_SSH_KEY:key,DINGTALK_LOCAL_SNAPSHOT_FILE:source,DINGTALK_LOCAL_SUMMARY_FILE:summaries,
       DINGTALK_DOCUMENT_CACHE_DIR:cache,DINGTALK_MEDIA_CACHE_DIR:path.join(root,'images'),DINGTALK_SUMMARY_ONLY:'1',TEST_PROMPT:captured};
-    const run = () => spawnSync(process.execPath,[script],{env,encoding:'utf8'});
+    const run = extra => spawnSync(process.execPath,[script],{env:{...env,...extra},encoding:'utf8'});
     let result=run(); assert.equal(result.status,0,result.stderr); assert.ok(!fs.existsSync(captured),'不能仅依据文件名调用模型');
     const bytes=Buffer.from('%PDF-1.7\nfixture'); let fingerprint=hash(bytes);
     fs.writeFileSync(path.join(cache,fingerprint+'.pdf'),bytes);
@@ -37,7 +37,10 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached
       fs.writeFileSync(path.join(cache,'index.json'),JSON.stringify({schemaVersion:1,conversationHash:hash(raw.conversationId),entries:{[hash(reference)]:{status:'ready',file:fingerprint+'.pdf',textFile,previewFile:fingerprint+'.pdf',pageImages:[],pageCount:1,textChars:text.length,unreadablePages:[],artifactHashes:{[textFile]:hash(text)}}}}));
     };
     const body='实际正文锚点：订单交付日期2026年11月，报价1.5元，需求增幅15%。'.repeat(5);
-    seed(body);result=run();assert.equal(result.status,0,result.stderr);
+    seed(body);
+    result=run({DINGTALK_MAX_RUN_MS:'240000'});assert.equal(result.status,0,result.stderr);
+    assert.ok(!fs.existsSync(captured),'文档需要预留完整300秒，4分钟整轮不应启动');
+    result=run();assert.equal(result.status,0,result.stderr);
     const cached=JSON.parse(fs.readFileSync(summaries,'utf8')).entries;assert.equal(Object.values(cached)[0].report.originalText,body.slice(0,2000),'原文摘录必须由解析正文忠实填充');
     const input=fs.readFileSync(captured,'utf8'); assert.ok(input.includes(body)); assert.match(input,/已下载并解析的 PDF\/Word 正文/);
     fs.unlinkSync(captured); result=run();assert.equal(result.status,0,result.stderr);assert.ok(!fs.existsSync(captured),'同一文件不得重复调用模型');

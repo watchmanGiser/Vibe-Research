@@ -16,13 +16,13 @@
 
 | 环境变量 | 默认值 | 含义 |
 |---|---:|---|
-| `DINGTALK_MAX_SUMMARIES_PER_RUN` | 2 | 每轮需模型的消息数，含失败 |
+| `DINGTALK_MAX_SUMMARIES_PER_RUN` | 4 | 每轮需模型的消息数，含失败 |
 | `DINGTALK_MAX_IMAGE_SUMMARIES_PER_RUN` | 2 | 每轮图片消息数 |
 | `DINGTALK_MAX_RUN_MS` | 480000 | 整轮时限，含采集、下载、模型与发布 |
 | `DINGTALK_MAX_JOB_ATTEMPTS` | 3 | 同一内容版本最多尝试次数，可调低 |
 | `DINGTALK_RETRY_DELAYS_MS` | 1800000,7200000 | 两次冷却间隔 |
 | `DINGTALK_DAILY_TOKEN_BUDGET` | 2000000 | 已报告用量达到阈值后停止新模型调用 |
-| `DINGTALK_DAILY_CALL_BUDGET` | 24 | 每日模型启动次数上限，未知用量也占次数 |
+| `DINGTALK_DAILY_CALL_BUDGET` | 200 | 每日模型启动次数上限，未知用量也占次数 |
 | `DINGTALK_JOB_STATE_FILE` | 摘要文件加 `.jobs.json` | 持久队列 |
 | `DINGTALK_USAGE_LEDGER_FILE` | 摘要文件加 `.usage.jsonl` | 用量账本 |
 
@@ -32,7 +32,7 @@
 
 Codex 完成事件和 Responses API 的输入字段包含缓存读取。统一账本中把缓存从输入中拆出，总 Token 为原输入加输出。没有完成事件时标记 `unknown`；只收到部分完成事件的失败调用标记 `partial`。这些用量需与中转平台账单核对，不假设未知用量为零，也不推算未经确认的费用币种。
 
-普通资料单次最多 180 秒，研报图片最多 300 秒；整轮剩余时间不足时不启动下一条。模型超时会终止本机进程组并等待清理。systemd 的 8 分钟总时限和 `KillMode=control-group` 提供额外兜底。本机终止无法证明中转上游已停止，已发生的用量仍由平台记账。
+普通文字单次最多 180 秒，文档正文及研报图片最多 300 秒；整轮剩余时间不足时不启动下一条。模型超时会终止本机进程组并等待清理。systemd 的 8 分钟总时限和 `KillMode=control-group` 提供额外兜底。本机终止无法证明中转上游已停止，已发生的用量仍由平台记账。
 
 ## 图片缓存和可选直接 API
 
