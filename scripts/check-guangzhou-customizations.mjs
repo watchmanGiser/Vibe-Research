@@ -23,7 +23,7 @@ function requireText(relative, patterns) {
   }
 }
 
-requireText("desktop/src/verticals/finance/pages/Intel.tsx", ['key: "semi"', 'key: "dingtalk"', "Semi动态", "SemiPanel", "DingTalkGroupPanel"]);
+requireText("desktop/src/verticals/finance/pages/Intel.tsx", ['key: "semi"', 'key: "dingtalk"', "X平台帐号跟踪", "SemiPanel", "DingTalkGroupPanel"]);
 requireText("desktop/src/verticals/finance/pages/SemiPanels.tsx", ["function SemiPanel", "api.semiTweets", "api.semiStatus", "api.dingtalkGroup", "item.author_avatar", "images.slice(0, 4)"]);
 requireText("desktop/src/verticals/finance/lib/nav.ts", ['to: "/intel/semi"', 'to: "/intel/dingtalk"', 'to: "/realtime"']);
 requireText("desktop/src/verticals/finance/router.tsx", ['path: "/realtime"', "basename: import.meta.env.BASE_URL"]);
@@ -41,7 +41,7 @@ const assetsDir = path.join(root, "desktop", "dist", "assets");
 const bundles = fs.existsSync(assetsDir)
   ? fs.readdirSync(assetsDir).filter((name) => name.endsWith(".js")).map((name) => fs.readFileSync(path.join(assetsDir, name), "utf8")).join("\n")
   : "";
-if (!bundles.includes("Semi动态")) failures.push("生产 JS 产物缺少 Semi动态标签");
+if (!bundles.includes("X平台帐号跟踪")) failures.push("生产 JS 产物缺少 X平台帐号跟踪标签");
 
 if (failures.length) {
   console.error("广州生产定制回归检查失败：");
