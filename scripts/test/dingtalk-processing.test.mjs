@@ -25,8 +25,8 @@ const value={kind:research?(images?'opinion':'research'):'event',title:research?
 fs.writeFileSync(a[a.indexOf('-o')+1],JSON.stringify(value));
 console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:10000,cached_input_tokens:8000,output_tokens:200}}));
 `, { mode: 0o700 });
-    fs.writeFileSync(path.join(bin, 'scp'), '#!/usr/bin/env node\nrequire("node:fs").copyFileSync(process.argv.at(-2),process.env.TEST_PUBLISHED);\n', { mode: 0o700 });
-    fs.writeFileSync(path.join(bin, 'ssh'), '#!/usr/bin/env node\n', { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'scp'), '#!/usr/bin/env node\nif(process.env.TEST_TERM_UPLOAD){process.kill(process.ppid,"SIGTERM");setTimeout(()=>{},80);}else{require("node:fs").copyFileSync(process.argv.at(-2),process.env.TEST_PUBLISHED);}\n', { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'ssh'), '#!/usr/bin/env node\nif(process.env.TEST_SSH_LOG)require("node:fs").appendFileSync(process.env.TEST_SSH_LOG,"commit\\n");\n', { mode: 0o700 });
     const data = { conversationId: 'processing-test', syncedAt: '2026-10-14T00:00:00Z', duplicateCount: 0, messages: [] };
     const write = () => fs.writeFileSync(raw, JSON.stringify(data));
     const message = (id, text) => ({ messageId: id, time: '2026-10-14T00:00:00Z', text, sender: 'fixture', duplicateCount: 0 });
@@ -34,8 +34,9 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:10000,cach
     const image = ref => { const name = hash(png) + '.png'; fs.writeFileSync(path.join(media, name), png); files[hash(ref)] = name; fs.writeFileSync(path.join(media, 'index.json'), JSON.stringify({ schemaVersion: 1, conversationHash: hash(data.conversationId), files })); };
     const env = { ...process.env, PATH: bin + ':' + process.env.PATH, DINGTALK_USE_ARCHIVE: '1', DINGTALK_GPT_PROVIDER_APPROVED: '1', DINGTALK_GPT_BIN: path.join(bin, 'gpt'), DINGTALK_CONVERSATION_ID: data.conversationId, DINGTALK_PUSH_HOST: 'fixture.invalid', DINGTALK_PUSH_SSH_KEY: key, DINGTALK_LOCAL_SNAPSHOT_FILE: raw, DINGTALK_LOCAL_SUMMARY_FILE: cache, DINGTALK_MEDIA_CACHE_DIR: media, TEST_STATE: state, TEST_CALLS: calls, TEST_PUBLISHED: published };
     const run = extra => { write(); return spawnSync(process.execPath, [script], { env: { ...env, ...extra }, encoding: 'utf8' }); };
+    const runRaw = extra => { write(); return spawnSync(process.execPath, [new URL('../publish-dingtalk-raw.mjs', import.meta.url).pathname], { env: { ...env, ...extra }, encoding: 'utf8' }); };
     const records = () => fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse) : [];
-    check({ data, message, image, run, records, state, ledger, published, raw, cache });
+    check({ data, message, image, run, runRaw, records, state, ledger, published, raw, cache });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 test('失败消息不阻断新消息；冷却、重启和三次封顶可阻止重复模型调用', () => fixture(({ data, message, run, records, state, ledger, published, raw }) => {
@@ -137,4 +138,16 @@ test('不同媒体引用的相同图片和正文只发布一个稳定代表，�
   image('@copy-c'); data.messages.push({ ...message('copy-c', '同一调价公告[图片消息](mediaId=@copy-c)'), time: '2026-10-14T02:00:00Z' });
   result = run(); assert.equal(result.status, 0, result.stderr);
   assert.equal(records().length, 1); assert.deepEqual(JSON.parse(fs.readFileSync(published)).opinions, first);
+}));
+
+test('上传中收到SIGTERM时，两种发布流程均不能继续提交或保存成功状态', () => fixture(({ data, message, run, runRaw, cache, raw }) => {
+  data.messages = [message('signal', '停止时保留已有消息资料。'.repeat(30))];
+  const log = cache + '.ssh-log';
+  for (const [invoke, file] of [[run, cache], [runRaw, raw]]) {
+    const result = invoke({ TEST_TERM_UPLOAD: '1', TEST_SSH_LOG: log });
+    assert.notEqual(result.status, 0, '停止信号必须中断上传');
+    assert.equal(fs.existsSync(log), false, '停止后不能再启动远端提交');
+    assert.equal(fs.existsSync(file + '.published-content.json'), false, '不能记为成功发布');
+    assert.doesNotMatch(result.stdout, /"pushed":true/);
+  }
 }));

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /** 将完整去重原文与配图推送到独立快照，不依赖模型整理。 */
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const executeFile = promisify(execFile);
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cacheMessageImages, messageImageReferences } from './dingtalk-media.mjs';
+import { windowPaused, pausedResult, assertUpdateWindow, updateDeadline, snapshotCommitCommand, mediaCommitCommand } from './dingtalk-schedule.mjs';
 import { mergeMessageHistory, normalizedMessageText, validateArchivedMessage } from './dingtalk-duplicates.mjs';
 
 const hash = (s) => createHash('sha256').update(s).digest('hex');
@@ -37,6 +40,7 @@ export function buildRawFeed(raw, expectedConversationId, images = new Map()) {
 }
 
 export async function publishRawFeed(env = process.env) {
+  if (windowPaused(env)) { console.log(JSON.stringify(pausedResult())); return; }
   const source = env.DINGTALK_LOCAL_SNAPSHOT_FILE || env.DINGTALK_SEMI_SNAPSHOT_FILE || path.join(os.homedir(), '.local/share/vibe-research/dingtalk.json');
   const raw = JSON.parse(fs.readFileSync(source, 'utf8'));
   let feed = buildRawFeed(raw, env.DINGTALK_CONVERSATION_ID);
@@ -50,7 +54,7 @@ export async function publishRawFeed(env = process.env) {
   const remote = env.DINGTALK_REMOTE_RAW_SNAPSHOT_FILE || '/opt/vibe-research/shared/semi/dingtalk-raw.json';
   if (!host || !/^[A-Za-z0-9.-]+$/.test(host) || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(user) || !key || !fs.existsSync(key)) throw Error('原文推送配置无效');
   if (!/^\/opt\/vibe-research\/shared\/semi\/[A-Za-z0-9._-]+$/.test(remote) || remote === (env.DINGTALK_REMOTE_SNAPSHOT_FILE || '/opt/vibe-research/shared/semi/dingtalk.json')) throw Error('原文与摘要必须使用独立快照');
-  const media = await cacheMessageImages(raw, env);
+  const media = await cacheMessageImages(raw, env, { deadline: updateDeadline(Infinity, env) });
   feed = buildRawFeed(raw, env.DINGTALK_CONVERSATION_ID, media.images);
   const stateFile = `${source}.published-content.json`;
   const targetHash = hash(JSON.stringify([env.DINGTALK_CONVERSATION_ID, host, user, remote]));
@@ -62,9 +66,14 @@ export async function publishRawFeed(env = process.env) {
     }
   } catch { /* 首次发布或旧状态无效时重新校验上传。 */ }
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-raw-publish-'));
-  const run = (bin, args) => {
-    const result = spawnSync(bin, args, { encoding: 'utf8', timeout: 120000, maxBuffer: 1024 * 1024, env });
-    if (result.error || result.status !== 0) throw Error(`原文${bin === 'scp' ? '上传' : '发布'}失败，保留线上快照`);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  process.once('SIGTERM', abort); process.once('SIGINT', abort);
+  const run = async (bin, args) => {
+    assertUpdateWindow(env);
+    try {
+      await executeFile(bin, args, { encoding: 'utf8', timeout: Math.max(1, updateDeadline(120000, env) - Date.now()), maxBuffer: 1024 * 1024, env, signal: controller.signal });
+    } catch { throw Error(`原文${bin === 'scp' ? '上传' : '发布'}失败，保留线上快照`); }
   };
   try {
     fs.chmodSync(stage, 0o700);
@@ -78,16 +87,17 @@ export async function publishRawFeed(env = process.env) {
       for (const name of media.filenames) fs.copyFileSync(path.join(media.directory, name), path.join(localMedia, name));
       const remoteMedia = path.posix.join(path.posix.dirname(remote), 'dingtalk-media');
       const upload = `${remoteMedia}.uploading-${process.pid}-${Date.now()}`;
-      run('scp', [...sshArgs, '-r', localMedia, `${user}@${host}:${upload}`]);
-      run('ssh', [...sshArgs, `${user}@${host}`, `set -e; mkdir -p -- '${remoteMedia}'; chmod 0755 '${remoteMedia}'; for f in '${upload}'/*; do chmod 0644 "$f"; mv -f -- "$f" '${remoteMedia}/'; done; rmdir -- '${upload}'`]);
+      await run('scp', [...sshArgs, '-r', localMedia, `${user}@${host}:${upload}`]);
+      await run('ssh', [...sshArgs, `${user}@${host}`, mediaCommitCommand(upload, remoteMedia, env)]);
     }
-    run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
-    run('ssh', [...sshArgs, `${user}@${host}`, `test -s '${dest}' && chmod 0640 '${dest}' && mv -f -- '${dest}' '${remote}'`]);
+    await run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
+    await run('ssh', [...sshArgs, `${user}@${host}`, snapshotCommitCommand(dest, remote, env)]);
     const stateTemp = `${stateFile}.${process.pid}.tmp`;
     fs.writeFileSync(stateTemp, JSON.stringify({ contentHash, targetHash }) + '\n', { mode: 0o600 });
     fs.renameSync(stateTemp, stateFile);
     console.log(JSON.stringify({ pushed: true, messages: feed.messages.length, duplicateCount: feed.duplicateCount, syncedAt: feed.syncedAt, images: media.ready, unavailableImages: media.unavailable }));
   } finally {
+    process.removeListener('SIGTERM', abort); process.removeListener('SIGINT', abort);
     fs.rmSync(stage, { recursive: true, force: true });
   }
 }

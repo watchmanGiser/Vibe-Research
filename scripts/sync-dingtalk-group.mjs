@@ -4,11 +4,13 @@
  * 不保存 DWS 原始响应、凭据或 reaction；仅接受完整查询，避免部分分页覆盖进度。
  */
 import { mergeMessageHistory } from "./dingtalk-duplicates.mjs";
+import { windowPaused, pausedResult, assertUpdateWindow, updateDeadline } from "./dingtalk-schedule.mjs";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+if (windowPaused()) { console.log(JSON.stringify(pausedResult())); process.exit(0); }
 const group = process.env.DINGTALK_GROUP_NAME?.trim();
 const expectedConversationId = process.env.DINGTALK_CONVERSATION_ID?.trim();
 if (!group || !expectedConversationId) throw new Error("缺少本地群名或会话 ID 配置，取消同步");
@@ -27,7 +29,7 @@ if (!Number.isFinite(prior.getTime())) throw new Error("本地快照时间无效
 // 重叠 10 分钟，弥补服务端索引延迟；稳定 ID 再消除窗口重叠带来的重复。
 const start = new Date(Math.max(now.getTime() - 30 * 24 * 60 * 60 * 1000, prior.getTime() - 10 * 60 * 1000));
 const args = ["chat", "+chat-messages", "--group", group, "--start", start.toISOString(), "--page-all", "--max-items", "1000", "--no-reactions", "--format", "json"];
-const result = spawnSync(dws, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 5 * 60 * 1000 });
+const result = spawnSync(dws, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: Math.max(1, updateDeadline(5 * 60 * 1000) - Date.now()) });
 if (result.error) throw result.error;
 if (result.status !== 0) throw new Error(`DWS 查询失败（退出码 ${result.status}），保留旧快照`);
 const response = JSON.parse(result.stdout);
@@ -54,6 +56,7 @@ const snapshot = {
   duplicateCount: Math.max(old?.duplicateCount || 0, resultHistory.duplicateCount),
   messages,
 };
+assertUpdateWindow();
 fs.mkdirSync(path.dirname(snapshotFile), { recursive: true, mode: 0o700 });
 const temp = `${snapshotFile}.${process.pid}.tmp`;
 fs.writeFileSync(temp, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });

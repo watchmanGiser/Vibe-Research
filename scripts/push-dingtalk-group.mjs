@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Nova 私有流水线：DWS 原文只落本机；调用本机 Codex GPT 整理；线上只接收严格白名单摘要。 */
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const executeFile = promisify(execFile);
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +12,9 @@ import { mergeMessageHistory } from './dingtalk-duplicates.mjs';
 import { cacheMessageImages, messageImageReferences } from './dingtalk-media.mjs';
 import { JobStore, UsageLedger, atomicSave, contentFingerprint, acquireQueueLock } from './dingtalk-jobs.mjs';
 import { callCodex, callResponses } from './dingtalk-model.mjs';
+import { windowPaused, pausedResult, assertUpdateWindow, updateDeadline, snapshotCommitCommand } from './dingtalk-schedule.mjs';
 process.umask(0o077);
+if (windowPaused()) { console.log(JSON.stringify(pausedResult())); process.exit(0); }
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const rawFile = process.env.DINGTALK_LOCAL_SNAPSHOT_FILE || path.join(os.homedir(), '.local/share/vibe-research/dingtalk.json');
@@ -29,7 +33,7 @@ function setting(name, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   return value;
 }
 const maxRunMs = setting('DINGTALK_MAX_RUN_MS', 480000, 480000);
-const runDeadline = Date.now() + maxRunMs;
+const runDeadline = updateDeadline(maxRunMs);
 const maxJobs = setting('DINGTALK_MAX_SUMMARIES_PER_RUN', 2, 100);
 const attemptsLimit = setting('DINGTALK_MAX_JOB_ATTEMPTS', 3, 3);
 const retryDelays = (process.env.DINGTALK_RETRY_DELAYS_MS || '1800000,7200000').split(',').map(Number);
@@ -43,13 +47,19 @@ if (transport === 'responses' && (!process.env.DINGTALK_MODEL_API_KEY || !proces
 let jobs, ledger, controller;
 const schemaError = (message, code = 'SCHEMA_INVALID') => Object.assign(Error(message), { code });
 
-function run(bin, args, options = {}) {
+async function run(bin, args, options = {}) {
+  assertUpdateWindow();
+  if (controller?.signal.aborted) throw Object.assign(Error('整理任务已停止'), { code: 'INTERRUPTED' });
   const remaining = runDeadline - Date.now();
   if (remaining <= 0) throw Object.assign(Error('整轮整理时间已到上限'), { code: 'RUN_TIMEOUT' });
-  const result = spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 1024 * 1024, ...options, timeout: Math.min(options.timeout || 300000, remaining) });
-  if (result.error || result.status !== 0) throw Error(`${path.basename(bin)} 执行失败（${result.error?.code || result.status || '超时'}）；禁止推送原文`);
-  return result;
+  try {
+    return await executeFile(bin, args, { encoding: 'utf8', maxBuffer: 1024 * 1024, ...options,
+      timeout: Math.min(options.timeout || 300000, remaining), signal: controller?.signal });
+  } catch (error) {
+    throw Object.assign(Error(`${path.basename(bin)} 执行失败（${error.code || '已停止'}）；禁止推送原文`), { code: error.name === 'AbortError' ? 'INTERRUPTED' : 'PUBLISH_FAILED' });
+  }
 }
+
 function save(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
@@ -170,7 +180,7 @@ const deadlineTimer = setTimeout(abort, Math.max(1, runDeadline - Date.now()));
 try {
 fs.mkdirSync(path.dirname(rawFile), { recursive: true, mode: 0o700 });
 // 维护重发只读取已核验的原始存档，不伪造同步结果，也不启动新的模型任务。
-if (process.env.DINGTALK_REPUBLISH_ONLY !== '1' && process.env.DINGTALK_USE_ARCHIVE !== '1') run(process.execPath, [path.join(dir, 'sync-dingtalk-group.mjs')], { env: { ...process.env, DINGTALK_SEMI_SNAPSHOT_FILE: rawFile } });
+if (process.env.DINGTALK_REPUBLISH_ONLY !== '1' && process.env.DINGTALK_USE_ARCHIVE !== '1') await run(process.execPath, [path.join(dir, 'sync-dingtalk-group.mjs')], { env: { ...process.env, DINGTALK_SEMI_SNAPSHOT_FILE: rawFile } });
 const snapshot = JSON.parse(fs.readFileSync(rawFile, 'utf8'));
 if (!snapshot || !Array.isArray(snapshot.messages)) throw Error('本地原文快照格式无效');
 const mergedHistory = mergeMessageHistory(snapshot.messages);
@@ -311,8 +321,8 @@ try {
   const file = path.join(stage, 'dingtalk.json'); fs.writeFileSync(file, `${JSON.stringify(publicFeed)}\n`, { mode: 0o600 });
   const dest = `${remote}.uploading-${process.pid}-${Date.now()}`;
   const sshArgs = ['-F', '/dev/null', '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15', '-i', key];
-  run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
-  run('ssh', [...sshArgs, `${user}@${host}`, `test -s '${dest}' && chmod 0640 '${dest}' && mv -f -- '${dest}' '${remote}'`]);
+  await run('scp', [...sshArgs, file, `${user}@${host}:${dest}`]);
+  await run('ssh', [...sshArgs, `${user}@${host}`, snapshotCommitCommand(dest, remote)]);
   save(stateFile, { contentHash, targetHash });
   console.log(JSON.stringify({ pushed: true, summaries: opinions.length, ...progress, at: new Date().toISOString() }));
 } finally { fs.rmSync(stage, { recursive: true, force: true }); }

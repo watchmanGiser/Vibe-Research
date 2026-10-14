@@ -69,7 +69,7 @@ sudo bash /opt/vibe-research/app/deploy/bootstrap-release-layout.sh /path/to/dep
 公开情报页启动不读取个人笔记或自选台账；从公开页进入其他栏目时使用整页导航，
 重新经过正常的认证和台账初始化，不以匿名空缓存替代个人资料。
 
-Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟运行
+Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 在北京时间08:00–次日01:00每10分钟运行
 `scripts/sync-dingtalk-group.mjs`，将消息同步并去重保存到权限受限的本地存档。
 同步成功后 `ExecStartPost` 调用 `scripts/publish-dingtalk-raw.mjs`，把所有长短原文独立原子发布到
 `/opt/vibe-research/shared/semi/dingtalk-raw.json`，不依赖模型整理成功。
@@ -78,7 +78,7 @@ Nova 用户级 `deploy/vibe-research-dingtalk-raw.{service,timer}` 每 10 分钟
 本地原文路径由 `DINGTALK_LOCAL_SNAPSHOT_FILE` 指定，服务端由 `DINGTALK_RAW_SNAPSHOT_FILE` 指定；
 `DINGTALK_RAW_PUBLISH_ONLY=1` 可仅校验本地存档、不上传。
 
-独立的 `deploy/vibe-research-dingtalk-push.timer` 每 10 分钟触发既有推送服务，
+独立的 `deploy/vibe-research-dingtalk-push.timer` 在北京时间08:01–次日01:00每10分钟触发既有推送服务，
 由 `scripts/push-dingtalk-group.mjs` 消费原文服务已验证的存档并整理超过 120 字的观点。生产启用
 `DINGTALK_USE_ARCHIVE=1`，避免重复查询及采集临时失败阻断整理队列。两个定时器关闭随机延迟，
 调度精度为 1 秒；没有新增内容时跳过重复发布。
@@ -115,3 +115,5 @@ Codex JSON 完成事件写入私有用量账本，未拿到完整用量时标记
 私有环境文件为 `~/.config/vibe-research/weibo.env`（权限 600），可配置 `WEIBO_STATE_DIR`、`WEIBO_BROWSER`、`WEIBO_PUSH_HOST`、`WEIBO_PUSH_USER`、`WEIBO_PUSH_SSH_KEY`。仅记录密钥路径，禁止写入密钥内容或登录 Cookie。采集使用独立匿名访客会话，不访问个人浏览器资料。
 
 原始响应存于 Nova `~/.local/share/vibe-research/weibo/raw/日期/`，累积规范化记录为 `jianfang.json`，推送健康记录为 `last-publish.json`。广州快照为 `/opt/vibe-research/shared/weibo/jianfang.json`，由 SSH 上传临时文件后原子替换。线上 `/weibo/jianfang` 只读该快照，沿用工作台鉴权；可用 `JIANFANG_SNAPSHOT_FILE` 指定隔离测试文件。微博配图由 Nova 保存到状态目录的 `assets/`，先同步到广州 `/opt/vibe-research/shared/semi/assets/weibo/`，再发布正文快照；沿用站点认证与 `/semi-assets/` 路由。页面保留原文、转发作者、配图、北京时间和原帖链接；刷新按钮只刷新展示，页面每分钟检查新推送。最近成功同步超过 45 分钟时显示存档提示。
+
+击球区夜间暂停需同时安装 `deploy/vibe-research-dingtalk-raw.service.d/schedule.conf`、整理服务窗口配置和 `deploy/vibe-research-dingtalk-night-stop.{service,timer}`；日历时区为北京时间，01:00–08:00不触发、不追赶错过的任务，01:00结束在途更新。详见上面的整理运行说明。

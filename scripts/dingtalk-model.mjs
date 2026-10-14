@@ -2,9 +2,12 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { normalizedUsage } from './dingtalk-jobs.mjs';
+import { assertUpdateWindow, updateDeadline } from './dingtalk-schedule.mjs';
 
 const modelError = code => Object.assign(Error(`整理模型调用失败（${code}）`), { code });
 export async function callCodex({ bin, args, input, timeout, signal, ledger, jobId, model, reasoning, killGrace = 1500 }) {
+  assertUpdateWindow();
+  timeout = Math.max(1, updateDeadline(timeout) - Date.now());
   const callId = ledger.start(jobId, { transport: 'codex', model: model || 'cli-default', reasoning: reasoning || 'cli-default' });
   const started = Date.now();
   let usage = null, failure = null, stderrCode = null, child, cleanup, stopped = false, requestIds = new Set();
@@ -70,6 +73,8 @@ export async function callCodex({ bin, args, input, timeout, signal, ledger, job
 }
 
 export async function callResponses({ endpoint, apiKey, model, reasoning, input, images, schema, timeout, signal, ledger, jobId }) {
+  assertUpdateWindow();
+  timeout = Math.max(1, updateDeadline(timeout) - Date.now());
   let url;
   try { url = new URL(endpoint); } catch { throw modelError('MODEL_CONFIG'); }
   if (url.username || url.password || url.search || url.hash) throw modelError('MODEL_CONFIG');

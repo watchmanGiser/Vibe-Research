@@ -1,0 +1,9 @@
+[Unit]
+Description=北京时间01:00结束击球区在途采集与整理
+
+[Service]
+Type=oneshot
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/usr/bin/systemctl --user stop vibe-research-dingtalk-raw.service vibe-research-dingtalk-push.service
+TimeoutStartSec=30s
