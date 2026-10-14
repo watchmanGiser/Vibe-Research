@@ -262,7 +262,7 @@ export function DingTalkGroupPanel() {
         </section>
         <section id={summaryId} aria-label="整理信息" className={cn(panelClass, mobileView !== "summary" && "hidden md:block")}>
           <div className="border-b border-border/60 px-3 py-4 md:p-4">
-            <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">整理信息</h3><span className="ml-auto text-[11px] text-muted-foreground">Nova 本地 GPT 整理</span></div>
+            <div className="mb-1 flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">整理信息</h3><span className="ml-auto text-[11px] text-muted-foreground">本地 GPT 整理</span></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">通知按事件、研报按机构报告内容整理；预测和判断保留原报告口径。</p>
           </div>
