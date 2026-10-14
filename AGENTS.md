@@ -93,20 +93,24 @@ scripts/start --remote --no-open --public-url https://<平台给 5930 端口分�
 | 研究运行的磁盘契约(manifest / evidence / calculations / report) | [`methodology/constitution.md`](methodology/constitution.md) §4 |
 | 开发期验证 | [`docs/development-validation.md`](docs/development-validation.md) |
 
-## 5. 改代码前
+## 5. 分析、最小修改与发布（2026-10-14 更新）
 
-```bash
-cd orchestrator && npm test && npm run typecheck
-cd ../desktop && npm test && npm run build
-cd .. && python -m pytest calc/tests backtest/tests .agents/skills/data-access/scripts/tests -q && python -m mypy
-```
+日常维护先分析影响范围，再选择最小修改、验证和发布路径。先核对 Git 分支、工作区、最近提交及线上后端/前端版本；简短说明目标文件、检查与发布方式后连续执行已授权工作。
 
-Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/development-validation.md`](docs/development-validation.md)。
+| 改动 | 必要验证 | 发布路径 |
+|------|----------|----------|
+| 文案、颜色、布局等纯前端小改动 | 前端生产构建（含类型检查）与受影响页面核对 | 仅前端静态包、原子切换 |
+| 前端交互 | 对应交互测试、前端构建、相关页面验收 | 无 API 契约变化时仅前端发布 |
+| 后端逻辑 | 对应后端测试、类型检查、相关接口与数据验证 | 对应服务或完整发布 |
+| 依赖、权限、路由、数据结构、跨模块升级 | 按实际影响扩大测试与回退验证 | 完整发布 |
 
-- 新写的界面测试用 `desktop/test/helpers/render.ts` 把组件渲染出来，断言用户看得到的内容；不要再新增比对源码文字的断言（「绝不能出现」类规则除外）。写法见同一份文档。
-- `orchestrator/src/` 里除 `src/finance/` 外是垂类无关的 Core:不许出现行业词(注释也算),纯净度测试会拦。
-- 大脑只能通过受控工具做事:不要给研究线程加 Shell、网络或任意文件访问,也不要为某一种大脑单独开后门。
-- 研究宪法和 SOP 改了,要连带检查 `calc/`、validator 与测试是否还对得上。
+- 纯前端发布：`python3 -I deploy/build-frontend-release.py <线上后端提交> <线上前端提交> <输出包>`。使用生产子路径 `/vibe-research/`，锁文件未变时复用依赖，构建后打包前端源码及静态文件；包含后端运行代码变更时拒绝使用此路径。
+- 服务器入口：`vibe-frontend-release publish <目标提交> <受控incoming包路径> <sha256>`。只原子切换当前应用的 `desktop/dist`，保留后端进程、数据、上一版资源与回滚点；复核基线、共用发布锁、上线验证失败自动恢复。
+- 前端提交号从 `desktop/dist/frontend-release.json` 读取；首次没有此文件时使用应用 `release.json` 的提交号。完整发布仍使用已有入口；完整发布之后前端基线随新应用重置。
+- 优先复用已有干净工作区；只有无法安全隔离当前改动时才建立新工作树。依赖与环境未变时复用安装，不重复跑已通过的无关检查，不为文案改动新增复刻实现的测试。
+- 独立 GPT 审查只关注本次差异，与构建、备份并行；发现问题后只复验受影响范围。公开 push/tag/GitHub Release 仍遵循 `docs/release-checklist.md`，日常页面维护不套用完整公开发版清单。
+- 新写的界面测试用 `desktop/test/helpers/render.ts` 渲染组件并断言用户看到的内容；不要新增比对源码文字的断言（禁止项规则除外）。
+- `orchestrator/src/` 除 `src/finance/` 外是 Core，不引入行业词。大脑仍只用受控工具；研究宪法、SOP 改动须核对 `calc/`、validator 与对应测试。
 
 ## 6. 维护约定(仓库主人定的规则)
 
@@ -131,7 +135,7 @@ Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/develo
 - 浏览器 API key 只保存在当前浏览器 `localStorage`,随请求交给本机后端;不得写入仓库、后端配置、运行账本、日志、文档或测试夹具。
 - provider 模板存在不等于已接通;接入探针通过也不等于所有业务已验收 —— 只有在实际业务页面跑通的通道才能在对应范围标为已验证。
   未接入时允许浏览栏目,不自动跳转设置。
-- 代码审计与发版前审计一律用 Opus 5,在干净上下文里做只读复审;先审一轮,具体发现修复后复验受影响范围。
+- 代码审计与发版前审计使用当前可用 GPT 模型，不固定版本；在独立、干净上下文里做只读审查，与构建并行，具体发现修复后只复验受影响范围。
 
 ### 6.3 官网与公开口径
 
