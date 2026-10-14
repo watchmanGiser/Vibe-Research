@@ -155,6 +155,11 @@ class ScopeTests(unittest.TestCase):
             (repo / 'desktop/page.tsx').write_text('new frontend')
             target = save()
             self.assertEqual(builder.check_scope(repo, base, base), target)
+            (repo / 'orchestrator/api.ts').rename(repo / 'desktop/moved-api.ts')
+            save()
+            with self.assertRaisesRegex(ValueError, '前端范围外'):
+                builder.check_scope(repo, base, base)
+            (repo / 'desktop/moved-api.ts').rename(repo / 'orchestrator/api.ts')
             (repo / 'orchestrator/api.ts').write_text('backend changed')
             save()
             with self.assertRaisesRegex(ValueError, '前端范围外'):

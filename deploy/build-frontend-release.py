@@ -35,7 +35,7 @@ def check_scope(repo, backend_commit, frontend_commit):
         subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, target], check=True)
     if git(repo, 'status', '--porcelain', '--untracked-files=normal'):
         raise ValueError('工作区有未提交文件，请只提交本次相关文件后再打包')
-    changed = git(repo, 'diff', '--name-only', backend_commit, target).splitlines()
+    changed = git(repo, 'diff', '--no-renames', '--name-only', backend_commit, target).splitlines()
     allowed = lambda p: (p.startswith('desktop/') or p in TOOL_FILES or
                          p in {'AGENTS.md', 'README.md', 'README_en.md'} or
                          (p.startswith('docs/') and p.endswith('.md')))
@@ -64,6 +64,8 @@ def pack(repo, output, backend_commit, frontend_commit, target):
         p = Path(name)
         if any(part in {'node_modules', '.local', '.venv'} or part.startswith('.env') for part in p.parts):
             raise ValueError('前端源码包含不应发布的路径：' + name)
+        if (repo / name).is_symlink():
+            raise ValueError('前端源码不应包含符号链接：' + name)
         if not name.startswith('desktop/dist/'):
             files['source/' + name] = (repo / name).read_bytes()
     manifest = {
