@@ -10,6 +10,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 
@@ -116,6 +117,36 @@ class PublishTests(unittest.TestCase):
         self.assert_data()
         with self.assertRaisesRegex(ValueError, '当前版本已变化'):
             remote.rollback(self.root, backup, lambda _: None)
+
+    def test_manual_rollback_rejects_changed_backup_files_and_version(self):
+        self.publish()
+        backup = next((self.root / 'shared/backups').iterdir())
+        for name in ('index.html', 'assets/old.js'):
+            path = backup / 'previous-dist' / name
+            original = path.read_bytes()
+            path.write_text('被修改的静态备份')
+            with self.assertRaisesRegex(ValueError, '备份校验失败'):
+                remote.rollback(self.root, backup, lambda _: None)
+            self.assertEqual(remote.frontend_commit(self.app), B)
+            path.write_bytes(original)
+        record = json.loads((backup / 'manifest.json').read_text())
+        record['previousFrontendCommit'] = C
+        (backup / 'manifest.json').write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError, '备份版本不一致'):
+            remote.rollback(self.root, backup, lambda _: None)
+        self.assertEqual(remote.frontend_commit(self.app), B)
+        self.assert_data()
+
+    def test_log_failure_restores_original_and_allows_same_commit_retry(self):
+        with patch.object(remote, 'log_result', side_effect=OSError('模拟日志空间不足')):
+            with self.assertRaisesRegex(OSError, '日志空间不足'):
+                self.publish()
+        self.assertFalse(self.dist.is_symlink())
+        self.assertFalse((self.root / 'frontend-releases' / B).exists())
+        self.assertEqual(remote.frontend_commit(self.app), A)
+        self.publish()
+        self.assertEqual(remote.frontend_commit(self.app), B)
+        self.assert_data()
 
     def test_concurrent_full_release_lock_blocks_activation(self):
         archive, sha = self.bundle()

@@ -107,6 +107,29 @@ def verify_public(dist):
         raise ValueError('后端健康检查失败')
 
 
+def snapshot_files(dist):
+    files = {}
+    for path in sorted(dist.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('静态备份包含符号链接文件')
+        if path.is_file():
+            files[path.relative_to(dist).as_posix()] = digest(path.read_bytes())
+    return files
+
+
+def verify_backup(app, backup, record):
+    previous = backup / 'previous-dist'
+    actual = snapshot_files(previous)
+    if (actual != record['previousFiles'] or actual.get('index.html') != record['previousIndexSha256'] or
+            actual.get('dingtalk.html') != record['previousDingtalkSha256']):
+        raise ValueError('备份校验失败，保持当前前端')
+    marker = previous / 'frontend-release.json'
+    previous_commit = commit(read_json(marker)['sourceCommit'] if marker.exists() else record['backendCommit'])
+    if (previous_commit != record['previousFrontendCommit'] or
+            commit(read_json(app / 'release.json')['commit']) != record['backendCommit']):
+        raise ValueError('备份版本不一致，保持当前前端')
+
+
 def log_result(root, value):
     with (root / 'shared/frontend-deployments.log').open('a') as log:
         log.write(json.dumps(value, ensure_ascii=False) + '\n')
@@ -167,7 +190,8 @@ def publish(root, archive, expected_commit, expected_digest, healthcheck=verify_
             record = {'time': stamp, 'backendCommit': backend, 'previousFrontendCommit': frontend_commit(app),
                       'frontendCommit': expected_commit, 'app': str(app), 'archiveSha256': expected_digest,
                       'previousIndexSha256': digest((dist / 'index.html').read_bytes()),
-                      'previousDingtalkSha256': digest((dist / 'dingtalk.html').read_bytes()), 'status': 'prepared'}
+                      'previousDingtalkSha256': digest((dist / 'dingtalk.html').read_bytes()),
+                      'previousFiles': snapshot_files(dist), 'status': 'prepared'}
             (backup / 'manifest.json').write_text(json.dumps(record) + '\n')
             previous = backup / 'previous-dist'
             previous.symlink_to(release / 'dist')
@@ -184,11 +208,18 @@ def publish(root, archive, expected_commit, expected_digest, healthcheck=verify_
             if switched:
                 exchange(backup / 'previous-dist', app / 'desktop/dist')
                 switched = False
-                log_result(root, {'frontendCommit': expected_commit, 'status': 'rolled_back'})
+            # 回滚交换失败时保留现场；交换成功后先清理，日志故障不阻断同版本重试。
             if stage.exists():
                 shutil.rmtree(stage)
             if release.exists():
                 shutil.rmtree(release)
+            try:
+                if backup is not None and (backup / 'manifest.json').exists():
+                    record['status'] = 'rolled_back'
+                    (backup / 'manifest.json').write_text(json.dumps(record) + '\n')
+                log_result(root, {'frontendCommit': expected_commit, 'status': 'rolled_back'})
+            except Exception:
+                pass
             raise
 
 
@@ -201,6 +232,7 @@ def rollback(root, backup, healthcheck=verify_public):
         app = (root / 'app').resolve(strict=True)
         if str(app) != record['app'] or frontend_commit(app) != record['frontendCommit'] or record['status'] not in {'prepared', 'success'}:
             raise ValueError('当前版本已变化，拒绝覆盖后续发布')
+        verify_backup(app, backup, record)
         dist = app / 'desktop/dist'
         exchange(backup / 'previous-dist', dist)
         try:
