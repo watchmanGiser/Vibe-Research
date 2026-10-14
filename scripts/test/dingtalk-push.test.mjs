@@ -17,7 +17,7 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     fs.writeFileSync(path.join(bin, 'scp'), "#!/usr/bin/env node\nconst fs=require('fs');fs.copyFileSync(process.argv.at(-2),process.env.TEST_CAPTURED);fs.appendFileSync(process.env.TEST_CALLS,'scp\\n');\n", { mode: 0o700 });
     fs.writeFileSync(path.join(bin, 'ssh'), "#!/usr/bin/env node\nrequire('fs').appendFileSync(process.env.TEST_CALLS,'ssh\\n');\n", { mode: 0o700 });
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DWS_BIN: path.join(bin, 'dws'), DINGTALK_GPT_BIN: path.join(bin, 'gpt'), TEST_RESPONSE: response, TEST_CAPTURED: captured, TEST_CALLS: calls,
-      DINGTALK_GPT_PROVIDER_APPROVED: '1', DINGTALK_GROUP_NAME: '测试群', DINGTALK_CONVERSATION_ID: 'private-conversation', DINGTALK_PUSH_HOST: 'example.test', DINGTALK_PUSH_SSH_KEY: key,
+      DINGTALK_RETRY_DELAYS_MS: '1,1', DINGTALK_GPT_PROVIDER_APPROVED: '1', DINGTALK_GROUP_NAME: '测试群', DINGTALK_CONVERSATION_ID: 'private-conversation', DINGTALK_PUSH_HOST: 'example.test', DINGTALK_PUSH_SSH_KEY: key,
       DINGTALK_LOCAL_SNAPSHOT_FILE: path.join(dir, 'raw.json'), DINGTALK_LOCAL_SUMMARY_FILE: path.join(dir, 'summary.json') };
     const run = (extra = {}) => spawnSync(process.execPath, [script], { env: { ...env, ...extra }, encoding: 'utf8' });
     const noConsent = run({ DINGTALK_GPT_PROVIDER_APPROVED: '0' });
@@ -36,7 +36,7 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     assert.equal(fs.readFileSync(calls, 'utf8').split('gpt').length - 1, 1, '摘要应缓存，不重复模型调用');
     const latestPublished = fs.readFileSync(captured, 'utf8');
     fs.writeFileSync(response, JSON.stringify({ complete: true, messages: [JSON.parse(fs.readFileSync(response)).messages[0], { messageId: 'new-id', conversationId: 'private-conversation', text: '新的原文调研材料'.repeat(40), sender: '乙', createTime: new Date().toISOString() }] }));
-    result = run({ TEST_GPT_FAIL: '1' }); assert.notEqual(result.status, 0);
+    result = run({ TEST_GPT_FAIL: '1' }); assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).failedJobs, 1);
     assert.equal(fs.readFileSync(captured, 'utf8'), latestPublished);
     result = run({ TEST_OVERSIZE: '1', DINGTALK_SUMMARY_ONLY: '1' }); assert.equal(result.status, 0, result.stderr);
     const latest = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
@@ -82,7 +82,7 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     const injected = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
     const one = Object.keys(injected.entries)[0]; injected.entries[one].text = 'malicious-source-copy';
     fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(injected));
-    result = run(); assert.notEqual(result.status, 0, '缓存带原文字段必须拒绝');
+    result = run(); assert.equal(result.status, 0, result.stderr); assert.doesNotMatch(fs.readFileSync(captured, 'utf8'), /malicious-source-copy/, '拒绝带原文的缓存并恢复独立保存的有效结果');
     assert.equal(fs.readFileSync(captured, 'utf8'), normalizedPublished);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -135,7 +135,7 @@ fs.writeFileSync(args[args.indexOf('-o')+1],JSON.stringify({kind:'event',title:'
     assert.equal(fs.readFileSync(rawFile,'utf8'),JSON.stringify(original),'识别不改写原始消息');
     const beforePublish=fs.readFileSync(captured,'utf8');
     installImage(Buffer.concat([png,Buffer.from('image-version-3')]));
-    result=run({TEST_IMAGE_MODEL_FAIL:'1'});assert.notEqual(result.status,0);assert.equal(fs.readFileSync(captured,'utf8'),beforePublish,'图片识别失败保留已发布结果');
+    result=run({TEST_IMAGE_MODEL_FAIL:'1'});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).failedJobs,1);assert.equal(fs.readFileSync(captured,'utf8'),beforePublish,'图片识别失败保留已发布结果');
     result=run({DINGTALK_REPUBLISH_ONLY:'1',TEST_IMAGE_MODEL_FAIL:'1'});assert.notEqual(result.status,0,'图片已经变化时维护重发不能冒充完成了新识别');
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });

@@ -59,7 +59,7 @@ export async function cacheMessageImages(raw, env = process.env, options = {}) {
     try {
       const url = new URL(reference);
       if (url.hostname !== 'pic.guhai888.cn' || url.username || url.password || url.port || url.search || url.hash || !/^\/view\.php\/[a-f0-9]{32}\.jpg$/.test(url.pathname)) throw Error('不支持的公开图片来源');
-      const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(20000), headers: { 'User-Agent': 'VibeResearch-image-cache/1.0' } });
+      const response = await fetch(url, { redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.min(20000, (options.deadline || Infinity) - Date.now()))), ...(options.signal ? [options.signal] : [])]), headers: { 'User-Agent': 'VibeResearch-image-cache/1.0' } });
       if (!response.ok || !response.body) throw Error('原图下载失败');
       const chunks = []; let size = 0;
       for await (const chunk of response.body) {
@@ -70,15 +70,16 @@ export async function cacheMessageImages(raw, env = process.env, options = {}) {
       files[hash(reference)] = storeImage(directory, Buffer.concat(chunks));
     } catch { downloadFailures++; }
   };
-  for (let offset = 0; offset < external.length; offset += 4) await Promise.all(external.slice(offset, offset + 4).map(fetchExternal));
+  const expired = () => options.signal?.aborted || (options.deadline != null && Date.now() >= options.deadline);
+  for (let offset = 0; offset < external.length && !expired(); offset += 4) await Promise.all(external.slice(offset, offset + 4).map(fetchExternal));
   const opaque = options.download === false ? [] : [...sources.keys()].filter(reference => !cached(reference) && reference.startsWith('@'));
   const messageIds = [...new Set(opaque.map(reference => sources.get(reference)))];
   // 查询与下载同一批真实消息，沿返回的 ledger 接收资源，不拼接媒体地址。
-  for (let offset = 0; offset < messageIds.length; offset += 50) {
+  for (let offset = 0; offset < messageIds.length && !expired(); offset += 50) {
     const stage = fs.mkdtempSync(path.join(directory, '.download-'));
     try {
       const result = spawnSync(env.DWS_BIN || 'dws', ['chat', '+messages-mget', '--msg-ids', messageIds.slice(offset, offset + 50).join(','), '--no-reactions', '--no-threads', '--download-resources', '--output-dir', './resources', '--format', 'json'],
-        { cwd: stage, env, encoding: 'utf8', timeout: 150000, maxBuffer: 32 * 1024 * 1024 });
+        { cwd: stage, env, encoding: 'utf8', timeout: Math.max(1, Math.min(150000, (options.deadline || Infinity) - Date.now())), maxBuffer: 32 * 1024 * 1024 });
       if (result.error || result.status !== 0) { downloadFailures += messageIds.slice(offset, offset + 50).length; break; }
       const response = JSON.parse(result.stdout);
       if (response.messagesComplete !== true || !Array.isArray(response.messages) || response.messages.some(message => message.conversationId !== raw.conversationId)) { downloadFailures++; break; }

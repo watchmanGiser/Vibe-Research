@@ -34,13 +34,17 @@ fs.writeFileSync(a[a.indexOf('-o')+1],JSON.stringify({kind:'event',title:'图片
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 }
 
-test('已识别图片都发生变化但预算不足时禁止混合新旧结果上传',()=>fixture(({run,image,published,uploads})=>{
+test('预算不足时逐条发布已完成结果，尚未处理的图片保留旧有效摘要',()=>fixture(({run,image,published,uploads})=>{
   const before=fs.readFileSync(published,'utf8'),oldUploads=fs.readFileSync(uploads,'utf8');
   image('@image-a','a2');image('@image-b','b2');
   let result=run({DINGTALK_MAX_IMAGE_SUMMARIES_PER_RUN:'1'});
-  assert.notEqual(result.status,0);
-  assert.equal(fs.readFileSync(published,'utf8'),before);
-  assert.equal(fs.readFileSync(uploads,'utf8'),oldUploads);
+  assert.equal(result.status,0,result.stderr);
+  const partial=JSON.parse(fs.readFileSync(published,'utf8')).opinions,old=JSON.parse(before).opinions;
+  assert.equal(partial.length,2,'没有处理的新图片仍保留旧有效摘要');
+  assert.notEqual(partial[0].summary,old[0].summary,'已完成的新识别可以发布');
+  assert.equal(partial[1].summary,old[1].summary,'未处理条目不能冒充完成了新识别');
+  assert.equal(JSON.parse(result.stdout).pendingImages,1);
+  assert.notEqual(fs.readFileSync(uploads,'utf8'),oldUploads);
   result=run({DINGTALK_MAX_IMAGE_SUMMARIES_PER_RUN:'1'});assert.equal(result.status,0,result.stderr);
   assert.equal(JSON.parse(fs.readFileSync(published,'utf8')).opinions.length,2);
   assert.notEqual(fs.readFileSync(published,'utf8'),before,'后续轮次补齐后才发布');

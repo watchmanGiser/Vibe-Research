@@ -22,6 +22,10 @@ fs.writeFileSync(args[args.indexOf('-o')+1],JSON.stringify(v));
   const run=extra=>spawnSync(process.execPath,[script],{env:{...env,...extra},encoding:'utf8'});
   let result=run();assert.equal(result.status,0,result.stderr);const pub=JSON.parse(fs.readFileSync(captured,'utf8'));assert.equal(pub.opinions[0].kind,'research');assert.match(pub.opinions[0].report.originalText,/We expect.*2028/);assert.equal(pub.opinions[0].report.publisher,'摩根士丹利');assert.doesNotMatch(fs.readFileSync(captured,'utf8'),/待核验|inputHash|textHash|report-message|@research-page/);
   const before=fs.readFileSync(captured,'utf8');
-  for(const extra of [{TEST_BOILERPLATE:'1'},{TEST_EXTRA:'1'}]) {fs.rmSync(cache,{force:true});result=run(extra);assert.notEqual(result.status,0);assert.equal(fs.readFileSync(captured,'utf8'),before);}
+  for(const [i,extra] of [{TEST_BOILERPLATE:'1'},{TEST_EXTRA:'1'}].entries()) {
+    const bytes=Buffer.concat([png,Buffer.from(`new-page-${i}`)]),filename=hash(bytes)+'.png';
+    fs.writeFileSync(path.join(media,filename),bytes);fs.writeFileSync(path.join(media,'index.json'),JSON.stringify({schemaVersion:1,conversationHash:hash('report-test'),files:{[hash('@research-page')]:filename}}));
+    result=run(extra);assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).failedJobs,1);assert.equal(fs.readFileSync(captured,'utf8'),before,'无效新识别不能覆盖已有有效研报');
+  }
  } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
