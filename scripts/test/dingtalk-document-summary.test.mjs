@@ -21,7 +21,8 @@ test('整理读取实际文档正文，下载未完成时跳过文件名摘要�
     fs.writeFileSync(path.join(bin, 'gpt'), `#!/usr/bin/env node
 const fs = require('node:fs'); let input=''; process.stdin.on('data',chunk=>input+=chunk); process.stdin.on('end',()=>{
 fs.writeFileSync(process.env.TEST_PROMPT,input);
-fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind:'opinion',report:null,title:'文档资料梳理',summary:'资料介绍了需求变化及价格假设。',keyPoints:['预测需结合后续披露验证。'],caveats:[]}));
+const schema=JSON.parse(fs.readFileSync(process.argv[process.argv.indexOf('--output-schema')+1]));if(schema.properties.report.properties.originalText.enum?.[0]!=='')process.exit(3);const hasImages=process.argv.includes('--image');if(hasImages&&schema.properties.sourceText.type==='null')process.exit(3);
+fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind:'research',report:{publisher:'测试研究机构',title:'实际文件标题',originalText:''},sourceText:hasImages?'实际附图识别文字：报价1.5元，2026年11月1日实施。':null,title:'文档资料梳理',summary:'报告介绍了需求变化及价格假设。',keyPoints:['报告预测需结合后续披露验证。'],caveats:[]}));
 console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached_input_tokens:0,output_tokens:30}})); });`, {mode:0o700});
     const env = {...process.env,DINGTALK_USE_ARCHIVE:'1',DINGTALK_GPT_PROVIDER_APPROVED:'1',DINGTALK_GPT_BIN:path.join(bin,'gpt'),DINGTALK_CONVERSATION_ID:raw.conversationId,
       DINGTALK_PUSH_HOST:'fixture.invalid',DINGTALK_PUSH_SSH_KEY:key,DINGTALK_LOCAL_SNAPSHOT_FILE:source,DINGTALK_LOCAL_SUMMARY_FILE:summaries,
@@ -37,6 +38,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached
     };
     const body='实际正文锚点：订单交付日期2026年11月，报价1.5元，需求增幅15%。'.repeat(5);
     seed(body);result=run();assert.equal(result.status,0,result.stderr);
+    const cached=JSON.parse(fs.readFileSync(summaries,'utf8')).entries;assert.equal(Object.values(cached)[0].report.originalText,body.slice(0,2000),'原文摘录必须由解析正文忠实填充');
     const input=fs.readFileSync(captured,'utf8'); assert.ok(input.includes(body)); assert.match(input,/已下载并解析的 PDF\/Word 正文/);
     fs.unlinkSync(captured); result=run();assert.equal(result.status,0,result.stderr);assert.ok(!fs.existsSync(captured),'同一文件不得重复调用模型');
     seed(body+'新增正文：实际解析内容发生变化。'); result=run();assert.equal(result.status,0,result.stderr);
@@ -45,5 +47,21 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached
     const changedBytes=Buffer.from('%PDF-1.7\nchanged-file-with-same-extracted-text'); fingerprint=hash(changedBytes);
     fs.writeFileSync(path.join(cache,fingerprint+'.pdf'),changedBytes); seed(body+'新增正文：实际解析内容发生变化。');
     result=run(); assert.equal(result.status,0,result.stderr); assert.ok(fs.existsSync(captured),'原文件指纹变化必须建立新任务，不能复用旧done结果');
+    const media=path.join(root,'images');fs.mkdirSync(media,{recursive:true});
+    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=','base64');
+    const imageFile=hash(png)+'.png';fs.writeFileSync(path.join(media,imageFile),png);
+    fs.writeFileSync(path.join(media,'index.json'),JSON.stringify({schemaVersion:1,conversationHash:hash(raw.conversationId),files:{[hash('@attached')]:imageFile}}));
+    raw.messages[0].text+='\n[图片消息](mediaId=@attached)';fs.writeFileSync(source,JSON.stringify(raw));
+    result=run();assert.equal(result.status,0,result.stderr);
+    const recognitionFiles=fs.readdirSync(summaries+'.artifacts').filter(name=>name.startsWith('ocr-'));
+    assert.equal(recognitionFiles.length,1,'混合研报必须保存真实附图识别文字');
+    const recognized=JSON.parse(fs.readFileSync(path.join(summaries+'.artifacts',recognitionFiles[0]))).text;
+    assert.equal(recognized,'实际附图识别文字：报价1.5元，2026年11月1日实施。');
+    assert.ok(!recognized.includes('实际正文锚点'),'图片缓存不能写入文档摘录');
+    raw.messages[0].text+='\n正文说明更新';fs.writeFileSync(source,JSON.stringify(raw));
+    result=run();assert.equal(result.status,0,result.stderr);
+    assert.ok(fs.readFileSync(captured,'utf8').includes(recognized),'正文变化时复用附图识别缓存');
+    assert.match(fs.readFileSync(captured,'utf8'),/无论是否为研报，图片识别文字只能填 sourceText/);
+
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
