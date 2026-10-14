@@ -1,4 +1,9 @@
 /** 整理展示空白和图片占位，原始归档仍保留完整文本。 */
+export interface DingTalkDocument {
+  id: string; name: string; kind: 'pdf' | 'docx' | 'doc';
+  status: 'pending' | 'ready' | 'partial' | 'download_failed' | 'parse_failed' | 'unsupported';
+  url?: string; textUrl?: string; previewUrl?: string; pageCount?: number | null; previewImages?: string[]; unreadablePages?: number[];
+}
 export interface DingTalkImage { reference: string; url: string }
 
 export function compactDingTalkText(value: string): string {

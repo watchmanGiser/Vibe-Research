@@ -12,6 +12,7 @@
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
 import { apiUrl } from "./api-base.ts";
+import type { DingTalkDocument } from "./dingtalk_content.ts";
 import type { JianfangFeed } from "./weibo.ts";
 import { readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts";
 import type { ImportResult } from "./importPositions.ts";
@@ -295,7 +296,7 @@ export const backend = {
     return call<{
       schemaVersion: 1; label: string; syncedAt: string; duplicateCount: number; total: number; filteredTotal: number;
       offset: number; limit: number; hasMore: boolean;
-      messages: Array<{ id: string; time: string; sender: string; text: string; duplicateCount: number; relatedIds: string[]; latestDuplicateTime: string | null; images?: Array<{ reference: string; url: string }>; versions?: Array<{ id: string; time: string; sender: string; text: string; images?: Array<{ reference: string; url: string }> }> }>;
+      messages: Array<{ id: string; time: string; sender: string; text: string; duplicateCount: number; relatedIds: string[]; latestDuplicateTime: string | null; documents?: DingTalkDocument[]; images?: Array<{ reference: string; url: string }>; versions?: Array<{ id: string; time: string; sender: string; text: string; documents?: DingTalkDocument[]; images?: Array<{ reference: string; url: string }> }> }>;
     }>(`/semi/dingtalk?${query}`);
   },
   semiStatus: () => call<{

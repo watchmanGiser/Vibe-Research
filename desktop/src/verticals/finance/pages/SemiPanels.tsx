@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AlertCircle, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { DingTalkDocumentCard } from "../components/DingTalkDocumentCard";
 import { dingTalkContent } from "../lib/dingtalk_content";
 interface SemiTweet {
   id: string; handle?: string; author_name?: string; author_screen?: string;
@@ -144,6 +145,7 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
       {content.images.length > 0 && <div className={cn("mt-3 grid items-start gap-3", content.images.length > 1 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {content.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={item.sender} index={index} />)}
       </div>}
+      {!!item.documents?.length && <div className="mt-3 space-y-3">{item.documents.map(document => <DingTalkDocumentCard key={document.id} document={document} />)}</div>}
       {!!item.versions?.length && <details open={defaultExpanded} className="mt-3 border-t border-border/50 pt-3">
         <summary className="cursor-pointer text-xs font-medium text-primary">查看其他原始版本（{item.versions.length} 份）</summary>
         <div className="mt-3 space-y-4">{item.versions.map(version => {
@@ -151,6 +153,7 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
           return <div key={version.id} className="border-t border-border/40 pt-3" data-original-version={version.id}>
             <div className="mb-2 text-xs text-muted-foreground">{version.sender} · {formatDingTalkTime(version.time)}</div>
             {original.text && <p className="whitespace-pre-wrap break-words text-base leading-7 [overflow-wrap:anywhere] md:text-sm md:leading-6">{original.text}</p>}
+            {!!version.documents?.length && <div className="mt-3 space-y-3">{version.documents.map(document => <DingTalkDocumentCard key={document.id} document={document} />)}</div>}
             {!!original.images.length && <div className={cn("mt-3 grid gap-3", original.images.length > 1 ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
               {original.images.map((image, index) => <DingTalkOriginalImage key={image.reference} url={image.url} sender={version.sender} index={index} />)}
             </div>}
@@ -289,7 +292,7 @@ export function DingTalkSummaryCard({ item, onShowOriginal }: { item: DingTalkSu
                 <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6">{item.summary}</p>
                 <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
                 {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}{item.caveats.join("；")}</div>}
-                <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原页" : "查看对应原文"}</button>
-                {item.kind === "research" && item.report && <details className="mt-3 border-t border-border/50 pt-3"><summary className="cursor-pointer text-xs text-primary">研报原文（所附图片页识别）</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{item.report.originalText}</p></details>}
+                <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原文" : "查看对应原文"}</button>
+                {item.kind === "research" && item.report && <details className="mt-3 border-t border-border/50 pt-3"><summary className="cursor-pointer text-xs text-primary">研报原文摘录</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{item.report.originalText}</p></details>}
               </article>);
 }

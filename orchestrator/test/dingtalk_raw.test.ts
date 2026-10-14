@@ -134,3 +134,22 @@ test('原始版本保留、可搜索且可沿重复 ID 定位；拒绝版本中�
   }
  });
 });
+
+test('文档缓存元信息随原文返回，拒绝无来源或跨站预览地址', async () => {
+  await withSnapshot(file => {
+    const reference = 'https://pushmedia.oss-cn-beijing.aliyuncs.com/research.pdf';
+    const fingerprint = id('file');
+    const document = { id: id(reference), name: '研究.pdf', kind: 'pdf', status: 'ready',
+      url: `/dingtalk/documents/${fingerprint}.pdf`, textUrl: `/dingtalk/documents/${fingerprint}.txt`,
+      previewUrl: `/dingtalk/documents/${fingerprint}.pdf`, pageCount: 2, previewImages: [`/dingtalk/documents/${fingerprint}-page-001.jpg`] };
+    const source = { id: id('document'), time: '2026-10-14 10:00:00', sender: '测试', text: `[研究.pdf](${reference})`, duplicateCount: 0,
+      relatedIds: [id('document')], latestDuplicateTime: null, documents: [document] };
+    const write = (item: object) => fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, label: '击球区原始消息', syncedAt: '2026-10-14T03:00:00Z', duplicateCount: 0, messages: [item] }));
+    write(source);
+    assert.equal(fetchDingTalkMessages().messages[0]!.documents![0]!.pageCount, 2);
+    for (const changed of [{ ...document, id: id('unrelated') }, { ...document, textUrl: 'https://example.com/secret.txt' },
+      { ...document, previewImages: [`/dingtalk/documents/${id('another')}-page-001.jpg`] }, { ...document, kind: 'html' }, { ...document, kind: ['pdf'] }, { id: document.id, name: document.name, kind: 'pdf', status: ['ready'] }]) {
+      write({ ...source, documents: [changed] }); assert.throws(() => fetchDingTalkMessages());
+    }
+  });
+});

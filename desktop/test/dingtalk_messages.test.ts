@@ -69,3 +69,17 @@ test('合并消息保留可查看的其他原始版本、发送时间和全部�
     assert.doesNotMatch(html, /overflow-y-auto|max-h-\[|上一页|下一页/);
   });
 });
+
+test('已下载文档提供预览和原文件下载，解析失败仍保留下载入口', async () => {
+  await withRenderer(async r => {
+    const { DingTalkMessageCard } = await r.load('/src/verticals/finance/pages/SemiPanels.tsx');
+    const fingerprint = 'f'.repeat(64);
+    const document = { id: 'e'.repeat(64), name: '研究资料.pdf', kind: 'pdf', status: 'ready', url: `/dingtalk/documents/${fingerprint}.pdf`, textUrl: `/dingtalk/documents/${fingerprint}.txt`, previewUrl: `/dingtalk/documents/${fingerprint}.pdf`, pageCount: 3, previewImages: [`/dingtalk/documents/${fingerprint}-page-001.jpg`] };
+    const source = { id: 'a'.repeat(64), time: '2026-10-14 10:00:00', sender: '测试', text: '研究资料', duplicateCount: 0, relatedIds: ['a'.repeat(64)], latestDuplicateTime: null, documents: [document] };
+    const html = r.html(DingTalkMessageCard, { item: source });
+    assert.match(textOf(html), /预览文档/); assert.match(textOf(html), /已下载 · 正文已解析 · 3 页/);
+    assert.ok(html.includes(`href="${document.url}" download="研究资料.pdf"`));
+    const failed = r.html(DingTalkMessageCard, { item: { ...source, documents: [{ ...document, status: 'parse_failed', textUrl: undefined }] } });
+    assert.match(textOf(failed), /正文解析暂未成功/); assert.match(textOf(failed), /下载原文件/); assert.doesNotMatch(textOf(failed), /预览文档/);
+  });
+});

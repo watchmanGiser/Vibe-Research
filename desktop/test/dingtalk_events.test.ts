@@ -37,8 +37,8 @@ test('研报显示机构归属和可读原页原文，不加待核验标签也�
     assert.match(text, /Takeaways from 2026 OCP Global Summit/);
     assert.match(text, /预计.*2028/);
     assert.match(text, /We expect commercial production/);
-    assert.match(text, /查看研报原页/);
-    assert.match(text, /所附图片页识别/);
+    assert.match(text, /查看研报原文/);
+    assert.match(text, /研报原文摘录/);
     assert.doesNotMatch(text, /待核验|待独立核验|第三方观点/);
     assert.doesNotMatch(html, /overflow-y-auto|max-h-/);
   });

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeMessageHistory } from './dingtalk-duplicates.mjs';
 import { cacheMessageImages, messageImageReferences } from './dingtalk-media.mjs';
+import { cacheMessageDocuments, messageDocumentReferences } from './dingtalk-documents.mjs';
 import { JobStore, UsageLedger, atomicSave, contentFingerprint, acquireQueueLock } from './dingtalk-jobs.mjs';
 import { callCodex, callResponses } from './dingtalk-model.mjs';
 import { windowPaused, pausedResult, assertUpdateWindow, updateDeadline, snapshotCommitCommand } from './dingtalk-schedule.mjs';
@@ -144,7 +145,8 @@ async function summarize(text, original = text, images = [], context = {}) {
     const desiredTimeout = images.length && /研报|大摩|摩根士丹利|Morgan Stanley/i.test(original) ? 300000 : 180000;
     const timeout = Math.min(desiredTimeout, runDeadline - Date.now() - 2000);
     if (timeout <= 0) throw Object.assign(Error('整轮整理时间已到上限'), { code: 'RUN_TIMEOUT' });
-    const input = prompt + '\n私有识别字段 sourceText：非研报图片填写忠实识别的原图文字（最多20000字）；研报原文只填 report.originalText，sourceText 填 null；没有图片文字则填 null。sourceText 不用于公开摘要。';
+    const documentInstructions = context.documents ? '\n本次资料包含已下载并解析的 PDF/Word 正文，正文在 downloaded_document 标记内。必须基于文件实际正文整理，不能声称只见文件名或未读取正文。文件名只作定位，机构、标题、日期和数值以正文为准；不能根据文件名补写。分段时只整理本段，最后合并。表格保留单位和年份。研报 report.originalText 保存关键原语言摘录（最多20000字），完整文件和正文由原文预览提供；不要擅称摘录就是全文。' : '';
+    const input = prompt + documentInstructions + '\n私有识别字段 sourceText：非研报图片填写忠实识别的原图文字（最多20000字）；研报原文只填 report.originalText，sourceText 填 null；没有图片文字则填 null。sourceText 不用于公开摘要。';
     let answer;
     if (transport === 'responses') {
       answer = await callResponses({ endpoint: process.env.DINGTALK_MODEL_API_URL, apiKey: process.env.DINGTALK_MODEL_API_KEY,
@@ -195,10 +197,10 @@ jobs = new JobStore(jobFile, scopeHash, { maxAttempts: attemptsLimit, retryDelay
 jobs.recoverInterrupted();
 ledger = new UsageLedger(usageFile, scopeHash, { tokenBudget: setting('DINGTALK_DAILY_TOKEN_BUDGET', 2000000), callBudget: setting('DINGTALK_DAILY_CALL_BUDGET', 24) });
 function validateCachedEntry(cached, id, time, source) {
-  const keys = ['caveats', 'id', 'keyPoints', 'summary', 'textHash', 'time', 'title', ...(cached && Object.hasOwn(cached, 'kind') ? ['kind'] : []), ...(cached && Object.hasOwn(cached, 'inputHash') ? ['inputHash'] : []), ...(cached && Object.hasOwn(cached, 'report') ? ['report'] : []), ...(cached && Object.hasOwn(cached, 'contentHash') ? ['contentHash'] : [])].sort().join(',');
+  const keys = ['caveats', 'id', 'keyPoints', 'summary', 'textHash', 'time', 'title', ...(cached && Object.hasOwn(cached, 'kind') ? ['kind'] : []), ...(cached && Object.hasOwn(cached, 'inputHash') ? ['inputHash'] : []), ...(cached && Object.hasOwn(cached, 'report') ? ['report'] : []), ...(cached && Object.hasOwn(cached, 'contentHash') ? ['contentHash'] : []), ...(cached && Object.hasOwn(cached, 'documentSourceHash') ? ['documentSourceHash'] : [])].sort().join(',');
   if (!cached || typeof cached !== 'object' || Object.keys(cached).sort().join(',') !== keys ||
     cached.id !== id || cached.time !== time || !/^[a-f0-9]{64}$/.test(cached.textHash) ||
-    (Object.hasOwn(cached, 'inputHash') && !/^[a-f0-9]{64}$/.test(cached.inputHash)) || (Object.hasOwn(cached, 'contentHash') && !/^[a-f0-9]{64}$/.test(cached.contentHash))) throw Error('本地整理缓存结构或来源不匹配，禁止推送');
+    (Object.hasOwn(cached, 'inputHash') && !/^[a-f0-9]{64}$/.test(cached.inputHash)) || (Object.hasOwn(cached, 'contentHash') && !/^[a-f0-9]{64}$/.test(cached.contentHash)) || (Object.hasOwn(cached, 'documentSourceHash') && !/^[a-f0-9]{64}$/.test(cached.documentSourceHash))) throw Error('本地整理缓存结构或来源不匹配，禁止推送');
   return validateItem({ title: cached.title, summary: cached.summary, keyPoints: cached.keyPoints, caveats: cached.caveats, ...(Object.hasOwn(cached, 'kind') ? { kind: cached.kind } : {}), ...(Object.hasOwn(cached, 'report') ? { report: cached.report } : {}) }, source, true);
 }
 const opinions = [];
@@ -225,34 +227,41 @@ const selected = new Set(selectedIds);
 if (selectedIds.some(id => !raw.messages.some(message => hash(message.messageId) === id))) throw Error('定向整理消息不在真实存档中');
 const imageBudget = setting('DINGTALK_MAX_IMAGE_SUMMARIES_PER_RUN', 2, 100);
 const media = await cacheMessageImages(raw, process.env, { download: process.env.DINGTALK_REPUBLISH_ONLY !== '1' && process.env.DINGTALK_USE_ARCHIVE !== '1', deadline: runDeadline, signal: controller.signal });
+const documents = await cacheMessageDocuments(raw, process.env, { download: false, deadline: runDeadline, signal: controller.signal });
 let processedImages = 0, pendingImages = 0, attemptedJobs = 0, failedJobs = 0, pendingJobs = 0;
 for (const m of raw.messages) {
   if (!validText(m.text, 500000) || !validText(m.messageId, 500) || !Number.isFinite(Date.parse(m.time))) throw Error('本地原文消息无效');
   const references = [...new Set([m, ...(m.duplicateSources || [])].flatMap(source => messageImageReferences(source.text)))];
   const images = [...new Set(references.map(reference => media.localFiles.get(reference)).filter(Boolean))].sort();
+  const documentReferences = [...new Map([m, ...(m.duplicateSources || [])].flatMap(source => messageDocumentReferences(source.text)).map(reference => [reference.id, reference])).values()];
+  const documentText = documentReferences.filter(reference => documents.texts.has(reference.id)).map(reference => `\n<downloaded_document name=${JSON.stringify(reference.name)}>\n${documents.texts.get(reference.id)}\n</downloaded_document>`).join('\n');
+  const inputText = m.text + documentText;
+  const documentHashes = documentReferences.map(reference => documents.fingerprints.get(reference.id) || `pending:${reference.id}`);
   const id = hash(m.messageId), textHash = hash(m.text);
-  const inputHash = hash(JSON.stringify({ version: images.length && /大摩|摩根士丹利|Morgan Stanley|研报|broker research/i.test(m.text) ? 2 : 1, textHash, images: images.map(file => path.basename(file)), missingImages: references.filter(reference => !media.localFiles.has(reference)).map(hash).sort() }));
+  const inputHash = hash(JSON.stringify({ version: images.length && /大摩|摩根士丹利|Morgan Stanley|研报|broker research/i.test(m.text) ? 2 : 1, textHash, images: images.map(file => path.basename(file)), missingImages: references.filter(reference => !media.localFiles.has(reference)).map(hash).sort(), ...(documentReferences.length ? { documents: documentHashes } : {}) }));
   let previous = entries[id], previousClean;
   if (previous) {
     try { previousClean = validateCachedEntry(previous, id, previous.time, previous.textHash === textHash ? m.text : sourceVersion(previous.textHash)); }
     catch { previousClean = null; }
   }
-  const fallback = () => { if (previousClean) appendOpinion(previous.contentHash || hash(JSON.stringify([scopeHash, previous.textHash, previous.inputHash])), { id, time: previous.time, ...previousClean }); };
-  if (m.text.trim().length < 120 && !images.length && !previous) { if (references.length) pendingImages++; continue; }
+  const fallback = () => { if (previousClean && (!documentReferences.length || previous.inputHash === inputHash || /^[a-f0-9]{64}$/.test(previous.documentSourceHash || ''))) appendOpinion(previous.contentHash || hash(JSON.stringify([scopeHash, previous.textHash, previous.inputHash])), { id, time: previous.time, ...previousClean }); };
+  if (documentReferences.some(reference => !documents.texts.has(reference.id))) { pendingJobs++; fallback(); continue; }
+  if (inputText.trim().length < 120 && !images.length && !previous) { if (references.length) pendingImages++; continue; }
   const primaryReferences = messageImageReferences(m.text);
   const completeSource = [m, ...(m.duplicateSources || [])].some(source => {
     const refs = messageImageReferences(source.text); return refs.length > 0 && refs.every(reference => media.localFiles.has(reference));
   });
   if (references.length && (!images.length || (primaryReferences.length && !completeSource))) { pendingImages++; pendingJobs++; fallback(); continue; }
-  const jobId = contentFingerprint(m.text, images, scopeHash);
+  const sourceFingerprint = contentFingerprint(inputText, images, scopeHash);
+  const jobId = documentReferences.length ? hash(JSON.stringify([sourceFingerprint, [...documentHashes].sort()])) : sourceFingerprint;
   const job = jobs.ensure(jobId);
   const record = clean => {
-    const candidate = { textHash, inputHash, contentHash: jobId, id, time: m.time, ...clean };
+    const candidate = { textHash, inputHash, contentHash: jobId, id, time: m.time, ...clean, ...(documentReferences.length ? { documentSourceHash: hash(JSON.stringify(documentHashes)) } : {}) };
     sourceVersion(textHash, m.text);
     if (JSON.stringify(entries[id]) !== JSON.stringify(candidate)) { entries[id] = candidate; save(summaryFile, { entries }); }
     appendOpinion(jobId, { id, time: m.time, ...clean });
   };
-  if (previousClean && previous.textHash === textHash && (!images.length || previous.inputHash === inputHash)) {
+  if (previousClean && previous.textHash === textHash && (!images.length && !documentReferences.length || previous.inputHash === inputHash)) {
     jobs.complete(jobId, previousClean, { persist: false }); record(previousClean); continue;
   }
   if (job.status === 'done') {
@@ -266,13 +275,14 @@ for (const m of raw.messages) {
   const desiredTimeout = images.length && /研报|大摩|摩根士丹利|Morgan Stanley/i.test(m.text) ? 300000 : 180000;
   const canStart = (!selected.size || selected.has(id)) && attemptedJobs < maxJobs && (!images.length || processedImages < imageBudget) &&
     !controller.signal.aborted && runDeadline - Date.now() >= desiredTimeout + 5000 && ledger.available() && jobs.due(jobId);
-  if (!canStart || m.text.length > 200000) { pendingJobs++; if (images.length) pendingImages++; fallback(); continue; }
+  if (!canStart || inputText.length > 200000) { pendingJobs++; if (images.length) pendingImages++; fallback(); continue; }
   attemptedJobs++; if (images.length) processedImages++;
   const generate = async repair => {
-    const chunks = m.text.match(/[\s\S]{1,9000}/g) || [];
+    const chunkSize = documentReferences.length ? 24000 : 9000;
+    const chunks = inputText.match(new RegExp(`[\\s\\S]{1,${chunkSize}}`, 'g')) || [];
     const parts = [];
-    for (let i = 0; i < chunks.length; i++) parts.push(await summarize(`第${i+1}/${chunks.length}段：\n${chunks[i]}`, m.text, images, { jobId, part: i, repair }));
-    return parts.length === 1 ? parts[0] : summarize(`以下是同一篇资料各段整理，请合并事件事实、观点和必要说明，不能补充或编造：\n${JSON.stringify(parts)}`, m.text, [], { jobId, part: 'merge', repair });
+    for (let i = 0; i < chunks.length; i++) parts.push(await summarize(`第${i+1}/${chunks.length}段：\n${chunks[i]}`, inputText, images, { jobId, part: i, repair, documents: documentReferences.length > 0 }));
+    return parts.length === 1 ? parts[0] : summarize(`以下是同一篇资料各段整理，请合并事件事实、观点和必要说明，不能补充或编造：\n${JSON.stringify(parts)}`, inputText, [], { jobId, part: 'merge', repair, documents: documentReferences.length > 0 });
   };
   const repairPhase = Boolean(job.repairPending || (job.lastError?.startsWith('SCHEMA_') && !(job.repairs || 0)));
   if (!jobs.begin(jobId, { repair: repairPhase })) { pendingJobs++; if (images.length) pendingImages++; fallback(); continue; }
