@@ -162,13 +162,77 @@ trap - EXIT
 printf '%s commit=%s previous=%s status=success\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$commit_sha" "${previous:-none}" >> "$shared_dir/deployments.log"
 rm -f -- "$archive"
 
-# 当前版本之外最多保留四个旧版本。只删除名称经过严格校验的版本目录。
-mapfile -t old_releases < <(find "$releases_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR>5 {print $2}')
-for old in "${old_releases[@]}"; do
-  name="$(basename "$old")"
-  [[ "$name" =~ ^([0-9a-f]{40}|bootstrap-[0-9]{14})$ ]] || continue
-  [[ "$(readlink -f "$current_link")" != "$old" && "$previous" != "$old" ]] || continue
-  rm -rf -- "$old"
-done
+# 健康检查通过后保留当前版本和两个成功旧版本；仍被进程或配置引用的目录保留。
+if ! python3 - "$deploy_root" "$release_dir" "${previous:-}" <<'PY'
+import json,os,pathlib,re,shutil,sys,tempfile
+root=pathlib.Path(sys.argv[1]);releases=root/'releases';shared=root/'shared'
+current=pathlib.Path(sys.argv[2]);previous=pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+if current.is_symlink() or not current.is_dir() or (root/'current').resolve()!=current:raise SystemExit('运行版本关系变化，保留旧目录')
+pattern=re.compile(r'(?:[a-f0-9]{40}|bootstrap-[0-9]{14})')
+marker=shared/'verified-releases.json';successful=set()
+if marker.is_symlink():raise SystemExit('版本记录路径无效')
+if marker.exists():
+ successful.update(json.loads(marker.read_text())['commits'])
+if any(not pattern.fullmatch(x) for x in successful):raise SystemExit('成功版本记录无效')
+log=shared/'deployments.log'
+if log.exists():
+ for line in log.read_text().splitlines():
+  if 'status=success' in line:
+   match=re.search(r'commit=([a-f0-9]{40})',line)
+   if match:successful.add(match.group(1))
+successful.add(current.name)
+candidates=[p for p in releases.iterdir() if not p.is_symlink() and p.is_dir() and pattern.fullmatch(p.name) and (p/'.local').is_symlink() and (p/'.local').resolve()==shared/'.local']
+keep={current}
+if previous and previous.is_dir():keep.add(previous)
+for p in sorted(candidates,key=lambda p:p.stat().st_mtime,reverse=True):
+ if p not in keep and p.name in successful and len(keep)<3:keep.add(p)
+reference_pattern=re.compile(re.escape(str(releases))+'/([a-f0-9]{40}|bootstrap-[0-9]{14})')
+def references(value):
+ return {releases/m for m in reference_pattern.findall(value)}
+for proc in pathlib.Path('/proc').iterdir():
+ if not proc.name.isdigit():continue
+ try:
+  keep.update(references(os.readlink(proc/'cwd')))
+  keep.update(references(os.readlink(proc/'exe')))
+  keep.update(references((proc/'cmdline').read_bytes().decode(errors='replace')))
+ except OSError:pass
+for directory in ['/etc/systemd/system','/etc/nginx','/etc/cron.d','/var/spool/cron/crontabs']:
+ for p in pathlib.Path(directory).rglob('*'):
+  try:
+   if p.is_symlink():keep.update(references(str(p.resolve())))
+   if p.is_file():keep.update(references(p.read_text()))
+  except (OSError,UnicodeError):pass
+# 所有不会删除的目录都参与依赖保护，不占三个成功版本的名额。
+all_directories={p for p in releases.iterdir() if p.is_dir() and not p.is_symlink()}
+keep.update(p for p in all_directories if p not in candidates or p.name not in successful)
+scanned=set()
+while any(p not in scanned and p.is_dir() for p in keep):
+ for retained in list(keep-scanned):
+  scanned.add(retained)
+  if not retained.is_dir():continue
+  for directory,dirs,files in os.walk(retained,followlinks=False):
+   for name in dirs+files:
+    p=pathlib.Path(directory)/name
+    if p.is_symlink():keep.update(references(str(p.resolve())))
+  bins=retained/'.venv/bin'
+  if bins.is_dir():
+   for p in bins.iterdir():
+    if p.is_file() and not p.is_symlink():
+     with p.open('rb') as f:first=f.readline(4096).decode(errors='ignore')
+     if first.startswith('#!'):keep.update(references(first))
+removed=[]
+for old in candidates:
+ if old in keep or old.name not in successful:continue
+ if (root/'current').resolve()!=current or old.is_symlink() or (old/'.local').resolve()!=shared/'.local':raise SystemExit('删除前版本或数据路径变化，停止清理')
+ shutil.rmtree(old);removed.append(old.name)
+marker.parent.mkdir(parents=True,exist_ok=True)
+fd,name=tempfile.mkstemp(prefix='.verified-releases-',dir=marker.parent)
+with os.fdopen(fd,'w') as output:json.dump({'commits':sorted(successful)},output)
+os.replace(name,marker)
+print(json.dumps({'pruned_releases':removed,'retained_releases':sorted(p.name for p in keep if p.is_dir()),'unverified_preserved':sorted(p.name for p in candidates if p.name not in successful)}))
+PY
+then
+  echo "部署已成功，旧版本清理未完成，请检查维护日志" >&2
+fi
 
 echo "部署成功：$commit_sha"
