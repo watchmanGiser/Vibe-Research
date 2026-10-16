@@ -470,11 +470,12 @@ export function Intel() {
       {cur.key === "dingtalk" ? <div className="px-3 md:px-0"><PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" /></div>
         : <PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />}
 
-      <nav aria-label="资讯栏目" className={cn("mb-4 flex flex-nowrap gap-0.5 md:flex-wrap md:gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
+      <nav aria-label="资讯栏目" className={cn("mb-4 grid grid-cols-12 gap-1.5 md:flex md:flex-wrap md:gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
         {TABS.map(({ key, label, mobileLabel, icon: Icon, integrated }) => (
           <button key={key} onClick={() => navigate(`/intel/${key}`)} aria-label={label.includes(mobileLabel) ? label : `${mobileLabel} ${label}`} title={label}
             aria-current={tab === key ? "page" : undefined}
-            className={cn("inline-flex min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-lg px-1 py-2.5 text-xs transition-colors md:flex-none md:gap-1.5 md:px-3 md:py-1.5 md:text-sm",
+            className={cn("inline-flex min-w-0 items-center justify-center whitespace-nowrap rounded-lg px-1 transition-colors md:flex-none md:gap-1.5 md:px-3 md:py-1.5 md:text-sm",
+              ["semi", "jianfang", "dingtalk"].includes(key) ? "col-span-4 py-3 text-sm" : "col-span-3 py-1.5 text-xs",
               tab === key ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>
             <Icon className="hidden h-4 w-4 shrink-0 md:block" />
             <span className="md:hidden">{mobileLabel}</span>
