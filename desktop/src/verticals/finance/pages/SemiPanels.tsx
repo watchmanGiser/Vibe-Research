@@ -221,13 +221,19 @@ export function DingTalkGroupPanel() {
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap items-center gap-2 px-3 text-xs text-muted-foreground md:mb-5 md:px-0">
-        <span className="rounded-full bg-primary/10 px-3 py-1 text-primary">原始消息 {messages?.total ?? "—"} 条</span>
-        <span className="rounded-full bg-muted px-3 py-1">已合并重复 {messages?.duplicateCount ?? data?.duplicateCount ?? "—"} 条</span>
-        <span className="rounded-full bg-muted px-3 py-1">整理信息 {data?.opinions.length ?? "—"} 条</span>
-        <button type="button" onClick={() => setRefreshVersion(value => value + 1)} disabled={loading || messageLoading}
-          className="ml-auto inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 hover:text-primary disabled:opacity-50">
-          <RefreshCw className={cn("h-3.5 w-3.5", (loading || messageLoading) && "animate-spin")} /> 刷新展示
+      <div role="group" aria-label="消息统计" className="mb-3 flex flex-nowrap items-center gap-1.5 px-3 text-xs text-muted-foreground md:mb-5 md:flex-wrap md:gap-2 md:px-0">
+        <span className="shrink-0 whitespace-nowrap rounded-full bg-primary/10 px-2 py-1 text-primary md:px-3">
+          <span className="md:hidden" aria-hidden="true">原文</span><span className="sr-only md:not-sr-only">原始消息</span> {messages?.total ?? "—"}<span className="sr-only md:not-sr-only"> 条</span>
+        </span>
+        <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-2 py-1 md:px-3">
+          <span className="md:hidden" aria-hidden="true">去重</span><span className="sr-only md:not-sr-only">已合并重复</span> {messages?.duplicateCount ?? data?.duplicateCount ?? "—"}<span className="sr-only md:not-sr-only"> 条</span>
+        </span>
+        <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-2 py-1 md:px-3">
+          <span className="md:hidden" aria-hidden="true">整理</span><span className="sr-only md:not-sr-only">整理信息</span> {data?.opinions.length ?? "—"}<span className="sr-only md:not-sr-only"> 条</span>
+        </span>
+        <button type="button" onClick={() => setRefreshVersion(value => value + 1)} disabled={loading || messageLoading} aria-label="刷新展示" title="刷新展示"
+          className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center gap-1 rounded-lg border border-border hover:text-primary disabled:opacity-50 md:h-auto md:w-auto md:px-3 md:py-1.5">
+          <RefreshCw className={cn("h-3.5 w-3.5", (loading || messageLoading) && "animate-spin")} /><span className="hidden md:inline">刷新展示</span>
         </button>
       </div>
       <div className="mx-3 mb-3 grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/30 p-1 md:hidden" role="group" aria-label="切换信息视图">
