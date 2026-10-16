@@ -22,13 +22,13 @@ import { JianfangPanel } from "./JianfangPanel";
 
 // 顺序即侧栏子栏目顺序（Layout 的 INTEL_LINKS 与此一致）
 const TABS = [
-  { key: "semi", label: "X平台帐号跟踪", icon: Rss, integrated: true, desc: "X平台帐号动态与中文整理" },
-  { key: "jianfang", label: "简放", icon: Lightbulb, integrated: true, desc: "交易者简放的公开微博、长文与转发内容" },
-  { key: "dingtalk", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文、事件记录、研报内容与观点整理" },
-  { key: "investment-news", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
-  { key: "news", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
-  { key: "filings", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
-  { key: "events", label: "事件概率", icon: TrendingUp, integrated: true, desc: "全球宏观预期概率 —— 预测市场的公开定价（Polymarket / Kalshi），只读、免登录" },
+  { key: "semi", mobileLabel: "X", label: "X平台帐号跟踪", icon: Rss, integrated: true, desc: "X平台帐号动态与中文整理" },
+  { key: "jianfang", mobileLabel: "简放", label: "简放", icon: Lightbulb, integrated: true, desc: "交易者简放的公开微博、长文与转发内容" },
+  { key: "dingtalk", mobileLabel: "击球区", label: "击球区观点", icon: Lightbulb, integrated: true, desc: "完整去重原文、事件记录、研报内容与观点整理" },
+  { key: "investment-news", mobileLabel: "全球", label: "Investment News", icon: Rss, integrated: true, desc: "12 赛道全球公开 RSS 资讯（集成自 investment-news 仓库）" },
+  { key: "news", mobileLabel: "新闻", label: "公开新闻", icon: Newspaper, integrated: false, desc: "汇总关注列表里各个股的近期新闻（公开源）" },
+  { key: "filings", mobileLabel: "公告", label: "A股公告", icon: FileText, integrated: false, desc: "汇总关注列表里各个股的近期公告（东财公开披露）" },
+  { key: "events", mobileLabel: "概率", label: "事件概率", icon: TrendingUp, integrated: true, desc: "全球宏观预期概率 —— 预测市场的公开定价（Polymarket / Kalshi），只读、免登录" },
 ];
 
 interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean }
@@ -470,16 +470,19 @@ export function Intel() {
       {cur.key === "dingtalk" ? <div className="px-3 md:px-0"><PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" /></div>
         : <PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />}
 
-      <div className={cn("mb-4 flex flex-wrap gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
-        {TABS.map(({ key, label, icon: Icon, integrated }) => (
-          <button key={key} onClick={() => navigate(`/intel/${key}`)}
-            className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors",
+      <nav aria-label="资讯栏目" className={cn("mb-4 flex flex-nowrap gap-0.5 md:flex-wrap md:gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
+        {TABS.map(({ key, label, mobileLabel, icon: Icon, integrated }) => (
+          <button key={key} onClick={() => navigate(`/intel/${key}`)} aria-label={label.includes(mobileLabel) ? label : `${mobileLabel} ${label}`} title={label}
+            aria-current={tab === key ? "page" : undefined}
+            className={cn("inline-flex min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-lg px-1 py-2.5 text-xs transition-colors md:flex-none md:gap-1.5 md:px-3 md:py-1.5 md:text-sm",
               tab === key ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>
-            <Icon className="h-4 w-4" /> {label}
-            {integrated && <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-medium text-primary">集成</span>}
+            <Icon className="hidden h-4 w-4 shrink-0 md:block" />
+            <span className="md:hidden">{mobileLabel}</span>
+            <span className="hidden md:inline">{label}</span>
+            {integrated && <span className="hidden rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-medium text-primary md:inline">集成</span>}
           </button>
         ))}
-      </div>
+      </nav>
 
       <GlassCard glow className={cur.key === "dingtalk" ? "rounded-none border-0 p-0 md:rounded-lg md:border md:p-4" : undefined}>
         <div className={cn("mb-3 flex items-center gap-2", cur.key === "dingtalk" && "px-3 md:px-0")}>
