@@ -4,13 +4,14 @@ import { withRenderer, textOf } from './helpers/render.ts';
 const quote = { key: 'usCRWV', symbol: 'CRWV', name: 'CoreWeave', market: 'US', currency: 'USD', timezone: 'America/New_York',
   status: 'ok', price: 61.39, dayPct: -11.91, fiveDayPct: -25.2, twentyDayPct: null,
   quoteTime: '2026-10-16 16:00:02', fetchedAt: '2026-10-17T04:00:00Z', source: '腾讯财经', sourceUrl: 'https://gu.qq.com/usCRWV', adjustment: '未复权', note: null };
-test('整理卡片同时显示独立行情区块、币种、交易日、来源与区间口径', async () => {
+test('整理卡片显示独立行情区块、币种与简洁行情时间', async () => {
   await withRenderer(async r => {
     const { DingTalkSummaryCard } = await r.load('/src/verticals/finance/pages/SemiPanels.tsx');
     const item = { id: 'a'.repeat(64), time: '2026-10-15 06:36:31', kind: 'opinion', title: 'CoreWeave信用风险', summary: '原资料观点保留。', keyPoints: ['资料观点不变'], caveats: ['信用判断待核验'] };
     const html = r.html(DingTalkSummaryCard, { item, onShowOriginal: () => {}, stockQuotes: [quote] });
     const text = textOf(html);
-    for (const expected of ['原资料观点保留', '资料观点不变', '信用判断待核验', '股价表现', 'CRWV', '美股', '61.39 美元', '-11.91%', '-25.20%', '近20日', '纽约时间', '腾讯财经', '区间未复权', '5/20日指交易日']) assert.ok(text.includes(expected), expected);
+    for (const expected of ['原资料观点保留', '资料观点不变', '信用判断待核验', '股价表现', 'CRWV', '美股', '61.39 美元', '-11.91%', '-25.20%', '近20日', '截至 2026-10-16 16:00:02（纽约时间）']) assert.ok(text.includes(expected), expected);
+    assert.doesNotMatch(text, /腾讯财经|区间未复权|5\/20日指交易日/);
     assert.match(text, /近20日 —/); assert.doesNotMatch(text, /0\.00%/);
   });
 });

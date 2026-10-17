@@ -18,7 +18,7 @@ export function DingTalkStockPerformance({ quotes }: { quotes: DingTalkStockPerf
           <div><dt className="mb-1 text-[11px] text-muted-foreground">最新价</dt><dd className="font-semibold">{quote.price === null ? '—' : `${quote.price.toFixed(2)} ${units[quote.currency]}`}</dd></div>
           {[['当日', quote.dayPct], ['近5日', quote.fiveDayPct], ['近20日', quote.twentyDayPct]].map(([label, value]) => <div key={label as string}><dt className="mb-1 text-[11px] text-muted-foreground">{label}</dt><dd className={`font-semibold ${tone(value as number | null)}`}>{pct(value as number | null)}</dd></div>)}
         </dl>
-        <p className="mt-2 text-[11px] leading-5 text-muted-foreground">截至 {quote.quoteTime || '时间待确认'}（{clocks[quote.market]}） · {quote.source}{quote.adjustment ? ` · 区间${quote.adjustment}` : ''} · 5/20日指交易日</p>
+        <p className="mt-2 text-[11px] leading-5 text-muted-foreground">截至 {quote.quoteTime || '时间待确认'}（{clocks[quote.market]}）</p>
         {quote.note && <p className={`mt-1 text-[11px] leading-5 ${quote.status === 'stale' ? 'text-warning' : 'text-muted-foreground'}`}>{quote.note}</p>}
       </>}
     </div>)}
