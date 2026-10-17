@@ -35,6 +35,9 @@ test('HTTP 鉴权、缺失 503 与只读摘要', async () => {
     fs.writeFileSync(file, JSON.stringify(snapshot));
     const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(r.status, 200); assert.deepEqual((await r.json()).opinions, [opinion]);
+    assert.equal((await fetch(`${url}?view=stock-performance`)).status, 401);
+    const market = await fetch(`${url}?view=stock-performance`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(market.status, 200); assert.deepEqual(await market.json(), { byOpinionId: {}, quotes: {} });
     const opinions = Array.from({ length: 551 }, (_, i) => ({ ...opinion, id: (i + 1).toString(16).padStart(64, '0') }));
     fs.writeFileSync(file, JSON.stringify({ ...snapshot, opinions }));
     const complete = await fetch(url + '?all=1&limit=1', { headers: { Authorization: `Bearer ${token}` } });

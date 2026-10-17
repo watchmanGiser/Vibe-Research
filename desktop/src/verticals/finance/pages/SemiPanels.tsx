@@ -1,3 +1,5 @@
+import type { DingTalkMarketFeed, DingTalkStockPerformance as StockPerformance } from '../lib/dingtalk_market';
+import { DingTalkStockPerformance } from '../components/DingTalkStockPerformance';
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AlertCircle, FileText, Lightbulb, Loader2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api";
@@ -167,6 +169,9 @@ export function DingTalkMessageCard({ item, defaultExpanded = false }: { item: D
 
 export function DingTalkGroupPanel() {
   const [data, setData] = useState<DingTalkOpinionFeed | null>(null);
+  const [marketData, setMarketData] = useState<DingTalkMarketFeed | null>(null);
+  const [marketError, setMarketError] = useState(false);
+  const [marketLoading, setMarketLoading] = useState(true);
   const [messages, setMessages] = useState<DingTalkMessageFeed | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(true);
@@ -194,6 +199,18 @@ export function DingTalkGroupPanel() {
     void api.dingtalkGroup(500, true).then(value => { if (active) setData(value); })
       .catch(error => { if (active) setErr(error instanceof Error ? error.message : String(error)); })
       .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [refreshVersion]);
+
+  useEffect(() => {
+    let active = true;
+    setMarketLoading(true); setMarketError(false);
+    void api.dingtalkStockPerformance().then(value => { if (active) setMarketData(value); })
+      .catch(() => { if (active) {
+        setMarketError(true);
+        setMarketData(previous => previous ? { ...previous, quotes: Object.fromEntries(Object.entries(previous.quotes).map(([key, quote]) => [key, quote.status === 'unavailable' ? quote : { ...quote, status: 'stale' as const, note: '本次刷新未成功，显示前次行情' }])) } : null);
+      } })
+      .finally(() => { if (active) setMarketLoading(false); });
     return () => { active = false; };
   }, [refreshVersion]);
 
@@ -275,12 +292,14 @@ export function DingTalkGroupPanel() {
             <div className="mb-1 flex flex-wrap items-start gap-x-2 gap-y-2"><div className="flex items-center gap-2"><Lightbulb className="h-4 w-4 text-primary" /><h3 className="font-semibold">整理信息</h3></div><DingTalkUsageBadge refreshVersion={refreshVersion} /></div>
             <p className="text-[11px] text-muted-foreground">最近整理 {summaryTime}</p>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">通知按事件、研报按机构报告内容整理；预测和判断保留原报告口径。</p>
+            {marketLoading && <p className="mt-2 text-[11px] text-muted-foreground">正在获取最新股价表现…</p>}
+            {marketError && <p className="mt-2 text-[11px] text-warning">股价表现更新失败，可点击“刷新展示”重试。</p>}
           </div>
           <div className="px-3 py-4 [overflow-wrap:anywhere] md:p-4" aria-label="总结列表">
             {err && <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">{err}<p className="mt-1 text-xs">整理信息暂不可用；不能据此判断没有新信息。</p></div>}
             {loading && !data ? <p className="py-10 text-sm text-muted-foreground">正在读取整理信息…</p>
             : !data?.opinions.length && !err ? <p className="py-10 text-center text-sm text-muted-foreground">暂无已整理的信息。</p>
-            : <div className="divide-y divide-border/40">{data?.opinions.map(item => <DingTalkSummaryCard key={item.id} item={item} onShowOriginal={showOriginal} />)}</div>}
+            : <div className="divide-y divide-border/40">{data?.opinions.map(item => <DingTalkSummaryCard key={item.id} item={item} onShowOriginal={showOriginal} stockQuotes={(marketData?.byOpinionId[item.id] ?? []).map(key => marketData?.quotes[key]).filter((quote): quote is StockPerformance => Boolean(quote))} />)}</div>}
           </div>
           <div className="border-t border-border/60 px-3 py-3 text-xs text-muted-foreground md:px-4">当前保留 {data?.opinions.length ?? 0} 条整理信息 · 可点击查看对应原文</div>
         </section>
@@ -291,13 +310,14 @@ export function DingTalkGroupPanel() {
 
 
 type DingTalkSummaryItem = Awaited<ReturnType<typeof api.dingtalkGroup>>["opinions"][number];
-export function DingTalkSummaryCard({ item, onShowOriginal }: { item: DingTalkSummaryItem; onShowOriginal: (id: string) => void }) {
+export function DingTalkSummaryCard({ item, onShowOriginal, stockQuotes = [] }: { item: DingTalkSummaryItem; onShowOriginal: (id: string) => void; stockQuotes?: StockPerformance[] }) {
   return (<article className="py-4 first:pt-0 last:pb-0">
                 <div className="mb-2 text-[11px] text-muted-foreground">资料时间 {formatDingTalkTime(item.time)} · {item.kind === "research" ? `研报内容 · ${item.report?.publisher ?? "研究机构"}` : item.kind === "event" ? "事件记录" : "第三方观点，待独立核验"}</div>
                 <h3 className="mb-2 text-base font-semibold">{item.title}</h3>
                 {item.kind === "research" && item.report && <p className="mb-2 text-xs text-muted-foreground">原研报：{item.report.title}</p>}
                 <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6">{item.summary}</p>
                 <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
+                <DingTalkStockPerformance quotes={stockQuotes} />
                 {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}{item.caveats.join("；")}</div>}
                 <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原文" : "查看对应原文"}</button>
                 {item.kind === "research" && item.report && <details className="mt-3 border-t border-border/50 pt-3"><summary className="cursor-pointer text-xs text-primary">研报原文摘录</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{item.report.originalText}</p></details>}

@@ -1,3 +1,4 @@
+import type { DingTalkMarketFeed } from './dingtalk_market';
 /**
  * 与**我们自己的底座**(Node 编排器)通话的一层。
  *
@@ -288,6 +289,7 @@ export const backend = {
     schemaVersion: 2; label: string; syncedAt: string; duplicateCount: number;
     opinions: Array<{ kind?: "event" | "opinion" | "research"; report?: { publisher: string; title: string; originalText: string }; id: string; time: string; title: string; summary: string; keyPoints: string[]; caveats: string[] }>;
   }>(`/semi/dingtalk?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}${all ? "&all=1" : ""}`),
+  dingtalkStockPerformance: () => call<DingTalkMarketFeed>("/semi/dingtalk?view=stock-performance"),
   dingtalkMessages: (options: { all?: boolean; limit?: number; offset?: number; q?: string; id?: string } = {}) => {
     const query = new URLSearchParams({ view: "messages", limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });
     if (options.all) query.set("all", "1");

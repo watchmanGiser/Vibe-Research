@@ -2,6 +2,7 @@
 import { ApiExtensionError, registerReadOnlyEndpoint } from "../api_extensions.ts";
 import { fetchSemi, SemiUpstreamError } from "./semi.ts";
 import { fetchDingTalkGroup, DingTalkSnapshotError } from "./dingtalk_semi.ts";
+import { buildDingTalkMarketFeed } from "./dingtalk_market.ts";
 import { fetchDingTalkMessages } from "./dingtalk_raw.ts";
 import { fetchJianfang, WeiboSnapshotError } from "./weibo.ts";
 
@@ -17,7 +18,8 @@ const handled = (fn: (query: URLSearchParams) => unknown | Promise<unknown>) => 
 registerReadOnlyEndpoint("/semi/health", handled(() => fetchSemi("/api/health")));
 registerReadOnlyEndpoint("/semi/status", handled(() => fetchSemi("/api/status")));
 registerReadOnlyEndpoint("/semi/tweets", handled((query) => fetchSemi("/api/tweets", query)));
-registerReadOnlyEndpoint("/semi/dingtalk", handled((query) => query.get("view") === "messages"
+registerReadOnlyEndpoint("/semi/dingtalk", handled((query) => query.get("view") === "stock-performance"
+  ? buildDingTalkMarketFeed(fetchDingTalkGroup(200, true).opinions) : query.get("view") === "messages"
   ? fetchDingTalkMessages(query) : fetchDingTalkGroup(Number(query.get("limit") ?? 200), query.get("all") === "1")));
 
 registerReadOnlyEndpoint("/weibo/jianfang", handled((query) => fetchJianfang(query)));
