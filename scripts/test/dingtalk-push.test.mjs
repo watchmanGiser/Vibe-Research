@@ -224,3 +224,41 @@ test('轻整理可沿用清晰短句，长段原文透传仍被拒绝且不覆�
     assert.ok(Object.values(jobs.jobs).some(job => job.lastError === 'UNSAFE_OUTPUT'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('整理以原消息的北京时间解释相对时间，分段合并不使用运行当天', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-message-time-'));
+  try {
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const key = path.join(dir, 'key'), raw = path.join(dir, 'raw.json'), captured = path.join(dir, 'prompts.jsonl');
+    fs.writeFileSync(key, 'fixture-key');
+    fs.writeFileSync(path.join(bin, 'gpt'), `#!/usr/bin/env node
+const fs=require('fs');const input=fs.readFileSync(0,'utf8');
+fs.appendFileSync(process.env.TEST_PROMPTS,JSON.stringify(input)+String.fromCharCode(10));
+fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind:'opinion',title:'行业观察',summary:'作者认为应关注需求变化。',keyPoints:['保留原文的计划和预测条件。'],caveats:[]}));
+`, { mode: 0o700 });
+    const messages = [
+      { messageId: 'year-end-local', time: '2025-12-31 23:30:00', sender: '测试', duplicateCount: 0,
+        text: '今年需求改善，明年继续观察；下周跟踪变化，不把计划视为已经完成。'.repeat(400) },
+      { messageId: 'year-end-iso', time: '2025-12-31T16:30:00.000Z', sender: '测试', duplicateCount: 0,
+        text: '原文资料日期：2024年8月1日。今年需求与明年计划按原资料时点理解，明确日期优先，消息转发时间不覆盖原日期。'.repeat(3) },
+    ];
+    fs.writeFileSync(raw, JSON.stringify({ conversationId: 'message-time-test', syncedAt: '2026-01-01T00:40:00Z', messages }));
+    const env = { ...process.env, TZ: 'UTC', PATH: `${bin}:${process.env.PATH}`, DINGTALK_USE_ARCHIVE: '1', DINGTALK_SUMMARY_ONLY: '1',
+      DINGTALK_GPT_PROVIDER_APPROVED: '1', DINGTALK_GPT_BIN: path.join(bin, 'gpt'), DWS_BIN: '/bin/false',
+      DINGTALK_CONVERSATION_ID: 'message-time-test', DINGTALK_LOCAL_SNAPSHOT_FILE: raw,
+      DINGTALK_LOCAL_SUMMARY_FILE: path.join(dir, 'summary.json'), DINGTALK_PUSH_HOST: 'fixture.invalid',
+      DINGTALK_PUSH_USER: 'ubuntu', DINGTALK_PUSH_SSH_KEY: key, TEST_PROMPTS: captured };
+    const result = spawnSync(process.execPath, [script], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).failedJobs, 0);
+    const inputs = fs.readFileSync(captured, 'utf8').trim().split('\n').map(s => JSON.parse(s));
+    const oldYear = inputs.filter(s => s.includes('消息发布时间为2025-12-31 23:30:00（北京时间）'));
+    assert.ok(oldYear.length >= 3, '分段及最终合并均携带同一个原消息时点');
+    assert.ok(oldYear.some(s => s.includes('请合并事件事实、观点和必要说明')), '确实覆盖最终合并');
+    const newYear = inputs.filter(s => s.includes('消息发布时间为2026-01-01 00:30:00（北京时间）'));
+    assert.equal(newYear.length, 1, 'ISO时间应正确跨日转换为北京时间，不受机器时区影响');
+    assert.ok(newYear[0].includes('原文资料日期：2024年8月1日'), '原文明确资料日期保留给模型优先采用');
+    assert.equal(inputs.length, oldYear.length + newYear.length, '每次调用都携带资料时点');
+    assert.deepEqual(JSON.parse(fs.readFileSync(raw, 'utf8')).messages, messages, '不改写原消息时间和原文');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
