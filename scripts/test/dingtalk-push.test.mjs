@@ -46,22 +46,61 @@ test('原文只保留本地；模型输出白名单摘要；失败禁止上传',
     const aliasId = Object.keys(aliases.entries)[0];
     const sourceHash = aliases.entries[aliasId].textHash;
     const rawBefore = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SNAPSHOT_FILE, 'utf8')).messages;
-    aliases.entries[aliasId].title = '旭创、xys、高意联特、萝卜';
-    aliases.entries[aliasId].summary = '中际旭创与新易盛，Coherent、联特科技；报价 1.5 元及 15 元。提高意识，关注串并联特性。罗博特科名称已规范，胡萝卜和萝卜快跑原词保留。';
-    aliases.entries[aliasId].keyPoints = ['“旭创”“xys”“高意联特”验证表现待核验，联特进展待核验，萝卜团队情况待核验。'];
+    aliases.entries[aliasId].title = '旭创、xys、高意联特、萝卜、hdg';
+    aliases.entries[aliasId].summary = '中际旭创与新易盛，Coherent、联特科技；报价 1.5 元及 15 元。提高意识，关注串并联特性。罗博特科名称已规范，胡萝卜和萝卜快跑原词保留。hdg专家与HDG及Hdg交流，myhdg和hdg2原词保留。';
+    aliases.entries[aliasId].keyPoints = ['“旭创”“xys”“高意联特”验证表现待核验，联特进展待核验，萝卜团队情况待核验，hdg规划待核验。'];
+    aliases.entries[aliasId].caveats = ['HDG产能规划仍为交流转述，待核验。'];
     fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(aliases));
     const modelCalls = fs.readFileSync(calls, 'utf8').split('gpt').length;
     result = run(); assert.equal(result.status, 0, result.stderr);
     const named = JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId);
-    assert.equal(named.title, '中际旭创、新易盛、Coherent、联特科技、罗博特科');
-    assert.equal(named.summary, aliases.entries[aliasId].summary);
-    assert.equal(named.keyPoints[0], '“中际旭创”“新易盛”“Coherent”“联特科技”验证表现待核验，联特科技进展待核验，罗博特科团队情况待核验。');
+    assert.equal(named.title, '中际旭创、新易盛、Coherent、联特科技、罗博特科、衡东光');
+    assert.equal(named.summary, '中际旭创与新易盛，Coherent、联特科技；报价 1.5 元及 15 元。提高意识，关注串并联特性。罗博特科名称已规范，胡萝卜和萝卜快跑原词保留。衡东光专家与衡东光及衡东光交流，myhdg和hdg2原词保留。');
+    assert.equal(named.caveats[0], '衡东光产能规划仍为交流转述，待核验。');
+    assert.equal(named.keyPoints[0], '“中际旭创”“新易盛”“Coherent”“联特科技”验证表现待核验，联特科技进展待核验，罗博特科团队情况待核验，衡东光规划待核验。');
     assert.equal(JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8')).entries[aliasId].textHash, sourceHash);
     assert.deepEqual(JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SNAPSHOT_FILE, 'utf8')).messages, rawBefore);
     assert.equal(fs.readFileSync(calls, 'utf8').split('gpt').length, modelCalls);
     let normalizedPublished = fs.readFileSync(captured, 'utf8');
     result = run(); assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(fs.readFileSync(captured, 'utf8')).opinions, JSON.parse(normalizedPublished).opinions, '规范全名幂等，后续同步不会再次扩展');
+    normalizedPublished = fs.readFileSync(captured, 'utf8');
+    const boundaryCache = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
+    Object.assign(boundaryCache.entries[aliasId], {
+      title: '甲'.repeat(97) + 'hdg2', summary: '乙'.repeat(797) + 'HDGExtra',
+      keyPoints: ['丙'.repeat(237) + 'Hdg2'], caveats: ['丁'.repeat(237) + 'hdg2'],
+    });
+    fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(boundaryCache));
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const boundary = JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId);
+    assert.equal(boundary.title, '甲'.repeat(97)); assert.equal(boundary.summary, '乙'.repeat(797));
+    assert.deepEqual(boundary.keyPoints, ['丙'.repeat(237)]); assert.deepEqual(boundary.caveats, ['丁'.repeat(237)]);
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId), boundary, '裁剪边界不制造公司缩写，重复发布保持幂等');
+    assert.deepEqual(JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SNAPSHOT_FILE, 'utf8')).messages, rawBefore);
+    assert.equal(fs.readFileSync(calls, 'utf8').split('gpt').length, modelCalls);
+    const mixedBoundaryCache = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
+    Object.assign(mixedBoundaryCache.entries[aliasId], {
+      title: '旭创' + '甲'.repeat(93) + 'hdg2', summary: '旭创' + '乙'.repeat(793) + 'HDGExtra',
+      keyPoints: ['旭创' + '丙'.repeat(233) + 'Hdg2'], caveats: ['旭创' + '丁'.repeat(233) + 'hdg2'],
+    });
+    fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(mixedBoundaryCache));
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const mixedBoundary = JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId);
+    assert.equal(mixedBoundary.title, '中际旭创' + '甲'.repeat(93)); assert.equal(mixedBoundary.summary, '中际旭创' + '乙'.repeat(793));
+    assert.deepEqual(mixedBoundary.keyPoints, ['中际旭创' + '丙'.repeat(233)]); assert.deepEqual(mixedBoundary.caveats, ['中际旭创' + '丁'.repeat(233)]);
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId), mixedBoundary, '旧别名扩展后的最终裁剪不制造公司缩写');
+    const legacyBoundaryCache = JSON.parse(fs.readFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, 'utf8'));
+    Object.assign(legacyBoundaryCache.entries[aliasId], {
+      title: '甲'.repeat(97) + '较高意愿', summary: '乙'.repeat(797) + '较高意愿',
+      keyPoints: ['丙'.repeat(237) + '较高意愿'], caveats: ['丁'.repeat(237) + '较高意愿'],
+    });
+    fs.writeFileSync(env.DINGTALK_LOCAL_SUMMARY_FILE, JSON.stringify(legacyBoundaryCache));
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const legacyBoundary = JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId);
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(captured, 'utf8')).opinions.find(x => x.id === aliasId), legacyBoundary, '新增缩写规则保持既有中文上下文在裁剪后的缓存幂等性');
     normalizedPublished = fs.readFileSync(captured, 'utf8');
     const responseBeforeCopy = JSON.parse(fs.readFileSync(response, 'utf8'));
     const copied = responseBeforeCopy.messages[0];
