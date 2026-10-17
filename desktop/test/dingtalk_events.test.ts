@@ -43,3 +43,23 @@ test('研报显示机构归属和可读原页原文，不加待核验标签也�
     assert.doesNotMatch(html, /overflow-y-auto|max-h-/);
   });
 });
+
+
+test('简称对应名称只用颜色提醒，文字与原始资料不增加说明', async () => {
+  await withRenderer(async r => {
+    const { DingTalkCompanyText } = await r.load('/src/verticals/finance/components/DingTalkCompanyText.tsx');
+    const original = 'hdg：衡东光；中际旭创、新易盛与Coherent、联特科技、罗博特科。\nCoherently、xCoherent、Coherent2和普通术语coherent原样保留。';
+    const html = r.html(DingTalkCompanyText, { text: original });
+    assert.equal(html.replace(/<[^>]*>/g, ''), original);
+    const marked = [...html.matchAll(/<span[^>]*class="[^"]*text-blue-600[^"]*"[^>]*>([^<]*)<\/span>/g)].map(match => match[1]);
+    assert.deepEqual(marked, ['衡东光', '中际旭创', '新易盛', 'Coherent', '联特科技', '罗博特科']);
+    assert.doesNotMatch(html, /title=|aria-label=|role=|href=/);
+    const { DingTalkSummaryCard } = await r.load('/src/verticals/finance/pages/SemiPanels.tsx');
+    const item = { ...notice, kind: 'research', title: '衡东光与中际旭创交流', summary: '新易盛、Coherent与联特科技交流。', keyPoints: ['罗博特科设备。'], caveats: ['衡东光参数口径尚未披露。'], report: { publisher: '研究机构', title: '衡东光原始标题', originalText: '罗博特科原页文字原样保留。' } };
+    const card = r.html(DingTalkSummaryCard, { item, onShowOriginal: () => {} });
+    const cardMarked = [...card.matchAll(/<span[^>]*class="[^"]*text-blue-600[^"]*"[^>]*>([^<]*)<\/span>/g)].map(match => match[1]);
+    assert.deepEqual(cardMarked, ['衡东光', '中际旭创', '新易盛', 'Coherent', '联特科技', '罗博特科', '衡东光']);
+    assert.match(card, />原研报：衡东光原始标题<\/p>/);
+    assert.match(card, />罗博特科原页文字原样保留。<\/p>/);
+  });
+});

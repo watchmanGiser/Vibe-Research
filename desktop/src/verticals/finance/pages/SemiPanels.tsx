@@ -1,3 +1,4 @@
+import { DingTalkCompanyText } from '../components/DingTalkCompanyText';
 import type { DingTalkMarketFeed, DingTalkStockPerformance as StockPerformance } from '../lib/dingtalk_market';
 import { DingTalkStockPerformance } from '../components/DingTalkStockPerformance';
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -313,12 +314,12 @@ type DingTalkSummaryItem = Awaited<ReturnType<typeof api.dingtalkGroup>>["opinio
 export function DingTalkSummaryCard({ item, onShowOriginal, stockQuotes = [] }: { item: DingTalkSummaryItem; onShowOriginal: (id: string) => void; stockQuotes?: StockPerformance[] }) {
   return (<article className="py-4 first:pt-0 last:pb-0">
                 <div className="mb-2 text-[11px] text-muted-foreground">资料时间 {formatDingTalkTime(item.time)} · {item.kind === "research" ? `研报内容 · ${item.report?.publisher ?? "研究机构"}` : item.kind === "event" ? "事件记录" : "第三方观点，待独立核验"}</div>
-                <h3 className="mb-2 text-base font-semibold">{item.title}</h3>
+                <h3 className="mb-2 text-base font-semibold"><DingTalkCompanyText text={item.title} /></h3>
                 {item.kind === "research" && item.report && <p className="mb-2 text-xs text-muted-foreground">原研报：{item.report.title}</p>}
-                <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6">{item.summary}</p>
-                <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}>{point}</li>)}</ul>
+                <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6"><DingTalkCompanyText text={item.summary} /></p>
+                <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}><DingTalkCompanyText text={point} /></li>)}</ul>
                 <DingTalkStockPerformance quotes={stockQuotes} />
-                {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}{item.caveats.join("；")}</div>}
+                {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}<DingTalkCompanyText text={item.caveats.join("；")} /></div>}
                 <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原文" : "查看对应原文"}</button>
                 {item.kind === "research" && item.report && <details className="mt-3 border-t border-border/50 pt-3"><summary className="cursor-pointer text-xs text-primary">研报原文摘录</summary><p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{item.report.originalText}</p></details>}
               </article>);
