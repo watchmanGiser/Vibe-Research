@@ -178,3 +178,49 @@ fs.writeFileSync(args[args.indexOf('-o')+1],JSON.stringify({kind:'event',title:'
     result=run({DINGTALK_REPUBLISH_ONLY:'1',TEST_IMAGE_MODEL_FAIL:'1'});assert.notEqual(result.status,0,'图片已经变化时维护重发不能冒充完成了新识别');
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('轻整理可沿用清晰短句，长段原文透传仍被拒绝且不覆盖已发布结果', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jqz-light-edit-'));
+  try {
+    const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+    const key = path.join(dir, 'key'), raw = path.join(dir, 'raw.json'), cache = path.join(dir, 'summary.json');
+    const answer = path.join(dir, 'answer.json'), published = path.join(dir, 'published.json');
+    fs.writeFileSync(key, 'fixture-key');
+    fs.writeFileSync(path.join(bin, 'gpt'), "#!/usr/bin/env node\nrequire('fs').copyFileSync(process.env.TEST_ANSWER,process.argv[process.argv.indexOf('-o')+1]);\n", { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'scp'), "#!/usr/bin/env node\nrequire('fs').copyFileSync(process.argv.at(-2),process.env.TEST_PUBLISHED);\n", { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, 'ssh'), '#!/usr/bin/env node\n', { mode: 0o700 });
+    const source = '需求观察：' + Array.from({ length: 50 }, (_, i) => `第${i + 1}周关注订单与产能；`).join('');
+    const message = { messageId: 'clear-source', sender: '测试用户', time: '2026-10-17 13:30:59', text: source, duplicateCount: 0 };
+    const archive = { conversationId: 'light-edit-test', syncedAt: '2026-10-17T05:40:00Z', messages: [message] };
+    fs.writeFileSync(raw, JSON.stringify(archive));
+    const clean = { kind: 'opinion', title: '需求观察', summary: '作者认为需跟踪订单和产能变化。', keyPoints: [source.slice(0, 120)], caveats: [] };
+    fs.writeFileSync(answer, JSON.stringify(clean));
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DINGTALK_USE_ARCHIVE: '1', DINGTALK_GPT_PROVIDER_APPROVED: '1',
+      DINGTALK_GPT_BIN: path.join(bin, 'gpt'), DWS_BIN: '/bin/false', DINGTALK_CONVERSATION_ID: archive.conversationId,
+      DINGTALK_LOCAL_SNAPSHOT_FILE: raw, DINGTALK_LOCAL_SUMMARY_FILE: cache, DINGTALK_PUSH_HOST: 'fixture.invalid',
+      DINGTALK_PUSH_USER: 'ubuntu', DINGTALK_PUSH_SSH_KEY: key, TEST_ANSWER: answer, TEST_PUBLISHED: published };
+    const run = () => spawnSync(process.execPath, [script], { env, encoding: 'utf8' });
+    let result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).failedJobs, 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(published, 'utf8')).opinions[0].keyPoints, clean.keyPoints);
+    const before = fs.readFileSync(published, 'utf8');
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).attemptedJobs, 0, '轻整理结果可从有效缓存复用');
+    const multiline = source.slice(0, 120) + '\n' + source.slice(120, 300);
+    for (const [messageId, text, copied] of [
+      ['long-copy', source + '新增资料。', { ...clean, summary: source.slice(0, 300) }],
+      ['whole-short-copy', source.slice(0, 171), { ...clean, summary: source.slice(0, 171) }],
+      ['offset-copy', source + '任意起点。', { ...clean, keyPoints: [source.slice(1, 241)] }],
+      ['multiline-copy', multiline, { ...clean, summary: multiline.slice(1, 241) }],
+    ]) {
+      archive.messages.push({ ...message, messageId, text });
+      fs.writeFileSync(raw, JSON.stringify(archive));
+      fs.writeFileSync(answer, JSON.stringify(copied));
+      result = run(); assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).failedJobs, 1, messageId);
+      assert.equal(fs.readFileSync(published, 'utf8'), before, '拒绝原文透传，保留已发布结果：' + messageId);
+    }
+    const jobs = JSON.parse(fs.readFileSync(`${cache}.jobs.json`, 'utf8'));
+    assert.ok(Object.values(jobs.jobs).some(job => job.lastError === 'UNSAFE_OUTPUT'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
