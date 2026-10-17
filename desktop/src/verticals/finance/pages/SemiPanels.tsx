@@ -317,7 +317,7 @@ export function DingTalkSummaryCard({ item, onShowOriginal, stockQuotes = [] }: 
                 <h3 className="mb-2 text-base font-semibold"><DingTalkCompanyText text={item.title} /></h3>
                 {item.kind === "research" && item.report && <p className="mb-2 text-xs text-muted-foreground">原研报：{item.report.title}</p>}
                 <p className="mb-2 whitespace-pre-wrap break-words text-base leading-7 md:text-sm md:leading-6"><DingTalkCompanyText text={item.summary} /></p>
-                <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i}><DingTalkCompanyText text={point} /></li>)}</ul>
+                <ul className="list-disc pl-5 text-base leading-7 md:text-sm md:leading-6">{item.keyPoints.map((point, i) => <li key={i} className="whitespace-pre-wrap"><DingTalkCompanyText text={point} /></li>)}</ul>
                 <DingTalkStockPerformance quotes={stockQuotes} />
                 {item.caveats.length > 0 && <div className="mt-2 text-xs text-warning">{item.kind === "event" || item.kind === "research" ? "补充说明：" : "风险 / 待核验："}<DingTalkCompanyText text={item.caveats.join("；")} /></div>}
                 <button type="button" onClick={() => onShowOriginal(item.id)} className="mt-3 inline-flex items-center gap-1 rounded-md border border-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/10"><FileText className="h-3 w-3" />{item.kind === "research" ? "查看研报原文" : "查看对应原文"}</button>
