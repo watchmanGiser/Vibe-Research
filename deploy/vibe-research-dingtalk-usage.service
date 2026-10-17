@@ -1,0 +1,12 @@
+[Unit]
+Description=击球区调用统计独立同步
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/vibe-research/dingtalk.env
+Environment=DINGTALK_ENFORCE_UPDATE_WINDOW=1
+WorkingDirectory=%h/.local/lib/vibe-research-dingtalk
+ExecCondition=/usr/bin/node %h/.local/lib/vibe-research-dingtalk/dingtalk-schedule.mjs --check
+ExecStart=/usr/bin/node %h/.local/lib/vibe-research-dingtalk/publish-dingtalk-usage.mjs
+TimeoutStartSec=1min
+KillMode=control-group

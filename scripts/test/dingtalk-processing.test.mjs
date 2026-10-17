@@ -151,3 +151,11 @@ test('上传中收到SIGTERM时，两种发布流程均不能继续提交或保�
     assert.doesNotMatch(result.stdout, /"pushed":true/);
   }
 }));
+
+test('新的每轮上限能处理四条消息，第五条留在队列且下轮继续', () => fixture(({ data, message, run, records, published }) => {
+  data.messages = Array.from({ length: 5 }, (_, index) => message('expanded-'+index, `第${index}条新的整理资料，日期和单位均按原文记录。`.repeat(12)));
+  let result = run(); assert.equal(result.status, 0, result.stderr);
+  assert.equal(records().length, 4); assert.equal(JSON.parse(fs.readFileSync(published)).opinions.length, 4);
+  result = run(); assert.equal(result.status, 0, result.stderr);
+  assert.equal(records().length, 5); assert.equal(JSON.parse(fs.readFileSync(published)).opinions.length, 5);
+}));
