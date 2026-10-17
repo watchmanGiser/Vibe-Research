@@ -19,6 +19,7 @@ function add(symbol: string, name: string, aliases: string[], market: Market = '
   stocks.push({ key, symbol, name, aliases: [name, ...aliases], market, currency: market === 'US' ? 'USD' : market === 'HK' ? 'HKD' : 'CNY', timezone: market === 'US' ? 'America/New_York' : market === 'HK' ? 'Asia/Hong_Kong' : 'Asia/Shanghai' });
 }
 add('CRWV', 'CoreWeave', ['Core Weave']);
+add('ASML', '阿斯麦', ['ASML']);
 add('NVDA', '英伟达', ['NVIDIA']); add('GOOGL', 'Alphabet', ['谷歌', 'Google']);
 add('MSFT', '微软', ['Microsoft']); add('AMZN', '亚马逊', ['Amazon']);
 add('META', 'Meta Platforms', ['Meta', '脸书']); add('AAPL', '苹果公司', ['苹果', 'Apple', 'Apple Inc.']); add('TSLA', '特斯拉', ['Tesla']);

@@ -22,14 +22,16 @@ function history() {
 }
 test('识别明确公司并优先标题主体；不把英文子串、提高意识或串并联特性当公司', () => {
   assert.equal(stock.symbol, 'CRWV'); assert.equal(stock.market, 'US');
-  assert.deepEqual(opinionStocks({ ...opinion, title: '其他资料', summary: 'NotCoreWeave提高意识，关注串并联特性。', keyPoints: [] }), []);
+  assert.deepEqual(opinionStocks({ ...opinion, title: '其他资料', summary: 'NotCoreWeave与ASMLib提高意识，关注串并联特性。', keyPoints: [] }), []);
   assert.deepEqual(opinionStocks({ ...opinion, title: '食品与研究方法', summary: '苹果期货震荡，小米粮食批发价上涨。使用 meta-analysis 方法汇总数据。', keyPoints: [] }), []);
   for (const summary of ['使用 meta-analysis 方法整理 Cometa公司的数据。', 'Apple 果汁涨价，Pineapple公司发布财报。']) {
     assert.deepEqual(opinionStocks({ ...opinion, title: '其他研究', summary, keyPoints: [] }), []);
   }
-  for (const [text, symbol] of [['苹果股价上涨', 'AAPL'], ['小米手机业务', '01810'], ['Meta资本开支', 'META'], ['Meta Platforms财报', 'META']]) {
+  for (const [text, symbol] of [['ASML季度指引', 'ASML'], ['阿斯麦产能预期', 'ASML'], ['asml财报', 'ASML'], ['苹果股价上涨', 'AAPL'], ['小米手机业务', '01810'], ['Meta资本开支', 'META'], ['Meta Platforms财报', 'META']]) {
     assert.equal(opinionStocks({ ...opinion, title: text!, summary: '', keyPoints: [] })[0]?.symbol, symbol);
   }
+  const asml = opinionStocks({ ...opinion, title: '瑞银ASML研报', summary: '英伟达、微软、谷歌、亚马逊均有讨论', keyPoints: [] })[0]!;
+  assert.equal(asml.key, 'usASML'); assert.equal(asml.symbol, 'ASML'); assert.equal(asml.market, 'US'); assert.equal(asml.currency, 'USD');
   const found = opinionStocks({ ...opinion, summary: '英伟达、微软、谷歌、亚马逊均有讨论' });
   assert.equal(found[0]!.symbol, 'CRWV'); assert.equal(found.length, 4);
 });
