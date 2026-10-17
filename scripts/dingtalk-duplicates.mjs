@@ -8,7 +8,7 @@ const plain = text => text.normalize('NFC').replace(/\r\n?/g, '\n')
   .replace(/(?:图片内容[：:]\s*)?<imageContent>\s*(?:image|photo|img)(?:[ _.-]?\d+)?\.(?:jpe?g|png|gif|webp)\s*<\/imageContent>/gi, '')
   .replace(/\[图片消息\]\(mediaId=[^\r\n)]+\)/g, '[配图]')
   .replace(/[（）]/g, char => char === '（' ? '(' : ')');
-function profile(text) {
+function profile(text, fingerprints) {
   const body = plain(text);
   const numbers = body.match(/\d+(?:\.\d+)?/g) || [];
   const signs = [];
@@ -22,12 +22,37 @@ function profile(text) {
   const qualifiers = body.match(/人民币|美元|港币|欧元|美金|\b(?:USD|CNY|RMB|HKD|EUR)\b|未|不|否|没有|无|已|确认|完成|失败|延期|延后|延迟|取消|撤销|终止|暂停|停|撤回|减少|下降|增长|以上|以下|至少|至多|超过|不足|仅|[?？!！]/g) || [];
   const key = body.replace(/cha(?=异|距|别)|(?<=代)cha/gi, '差').replace(/[+\s]/g, '');
   const parentheses = [...key.matchAll(/\(([^()]{1,100})\)/g)].map(match => match[1]);
+  const references = refs(text);
   return { key, outside: key.replace(/\([^()]{1,100}\)/g, '()'), parentheses,
-    guard: JSON.stringify([numbers, signs, qualifiers]), images: refs(text).length, full: normalizedMessageText(text) };
+    guard: JSON.stringify([numbers, signs, qualifiers]), images: references.length,
+    // 图片指纹缺失时为 null：此时不参与图片判重，保持仅按文本比对的旧行为。
+    signatures: references.map(reference => fingerprints?.get?.(reference) || null),
+    full: normalizedMessageText(text) };
+}
+const IMAGE_ONLY = '[配图]';
+/** dHash 以 16 位定宽十六进制保存，超出 JS 32 位位运算范围，必须用 BigInt 求汉明距离。 */
+const hamming = (a, b) => {
+  let rest = BigInt(`0x${a}`) ^ BigInt(`0x${b}`), count = 0;
+  while (rest) { rest &= rest - 1n; count++; }
+  return count;
+};
+const signatureOrder = (a, b) => a.w - b.w || a.h - b.h || (a.d < b.d ? -1 : a.d > b.d ? 1 : 0);
+/** 尺寸完全相同且 dHash 距离不超过 2 才算同一张图；任一张缺指纹一律不判重。
+ *  长截图缩略后差异会被平均掉，尺寸必须逐张严格相等，避免不同长图误合并。 */
+function sameImages(a, b) {
+  if (!a.length || a.length !== b.length || a.some(item => !item) || b.some(item => !item)) return false;
+  const left = [...a].sort(signatureOrder), right = [...b].sort(signatureOrder);
+  return left.every((item, index) => item.w === right[index].w && item.h === right[index].h && hamming(item.d, right[index].d) <= 2);
 }
 function equivalent(a, b) {
   if (a.full === b.full) return true;
-  if (a.key.length < 100 || b.key.length < 100) return false;
+  // 纯图片消息经 plain() 归一化后只剩占位符，文本已无区分力，只能按图片内容比对。
+  if (a.key === IMAGE_ONLY && b.key === IMAGE_ONLY) return sameImages(a.signatures, b.signatures);
+  if (a.key.length < 100 || b.key.length < 100) {
+    // 带图短文本：文字与图片指纹都必须一致，才认定为同一条转发。
+    if (!a.images || !b.images || a.images !== b.images) return false;
+    return a.key === b.key && sameImages(a.signatures, b.signatures);
+  }
   if (a.guard !== b.guard || a.images !== b.images) return false;
   if (a.key === b.key) return true;
   if (a.outside !== b.outside || a.parentheses.length !== b.parentheses.length) return false;
@@ -50,7 +75,8 @@ export function validateArchivedMessage(message) {
         Object.keys(source).sort().join(',') === 'messageId,sender,text,time' && valid(source.messageId) && valid(source.text) && valid(source.sender) && valid(source.time) && Number.isFinite(messageTime(source.time)))))) throw Error('原文及原始版本格式无效');
 }
 const original = message => ({ messageId: message.messageId, time: message.time, sender: message.sender, text: message.text });
-export function mergeMessageHistory(existing, incoming = []) {
+export function mergeMessageHistory(existing, incoming = [], options = {}) {
+  const fingerprints = options.fingerprints instanceof Map ? options.fingerprints : null;
   const groups = [], exact = new Map(), buckets = new Map(), seen = new Map();
   let merged = 0, added = 0;
   const add = (message, isIncoming) => {
@@ -63,7 +89,7 @@ export function mergeMessageHistory(existing, incoming = []) {
       }
       return;
     }
-    const p = profile(message.text), exactKey = p.full;
+    const p = profile(message.text, fingerprints), exactKey = p.full;
     const bucket = digest(JSON.stringify([p.outside, p.guard, p.images]));
     const match = exact.get(exactKey) || (buckets.get(bucket) || []).find(group => equivalent(group.profile, p));
     const ids = [message.messageId, ...(message.duplicateMessageIds || []), ...(message.duplicateSources || []).map(source => source.messageId)];

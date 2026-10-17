@@ -12,19 +12,20 @@ import { cacheMessageImages, messageImageReferences } from './dingtalk-media.mjs
 import { cacheMessageDocuments, messageDocumentReferences } from './dingtalk-documents.mjs';
 import { windowPaused, pausedResult, assertUpdateWindow, updateDeadline, snapshotCommitCommand, mediaCommitCommand } from './dingtalk-schedule.mjs';
 import { mergeMessageHistory, normalizedMessageText, validateArchivedMessage } from './dingtalk-duplicates.mjs';
+import { imageFingerprints } from './dingtalk-image-fingerprint.mjs';
 
 const hash = (s) => createHash('sha256').update(s).digest('hex');
 export { normalizedMessageText };
 const validText = (s) => typeof s === 'string' && s.trim().length > 0;
 const timestamp = (s) => Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? s.replace(' ', 'T') + '+08:00' : s);
 
-export function buildRawFeed(raw, expectedConversationId, images = new Map(), documents = new Map()) {
+export function buildRawFeed(raw, expectedConversationId, images = new Map(), documents = new Map(), fingerprints = new Map()) {
   if (!raw || raw.conversationId !== expectedConversationId || !validText(expectedConversationId) || !Array.isArray(raw.messages) ||
       !validText(raw.syncedAt) || !Number.isFinite(timestamp(raw.syncedAt)) || !Number.isInteger(raw.duplicateCount) || raw.duplicateCount < 0) {
     throw Error('本地原文快照身份或格式无效，保留线上快照');
   }
   for (const message of raw.messages) validateArchivedMessage(message);
-  const history = mergeMessageHistory(raw.messages);
+  const history = mergeMessageHistory(raw.messages, [], { fingerprints });
   const sourceImages = text => messageImageReferences(text).filter(reference => images.has(reference)).map(reference => ({ reference, url: images.get(reference) }));
   const sourceDocuments = text => messageDocumentReferences(text).map(reference => documents.get(reference.id)).filter(Boolean);
   const messages = history.messages.map(message => {
@@ -60,7 +61,9 @@ export async function publishRawFeed(env = process.env) {
   if (!/^\/opt\/vibe-research\/shared\/semi\/[A-Za-z0-9._-]+$/.test(remote) || remote === (env.DINGTALK_REMOTE_SNAPSHOT_FILE || '/opt/vibe-research/shared/semi/dingtalk.json')) throw Error('原文与摘要必须使用独立快照');
   const media = await cacheMessageImages(raw, env, { deadline: updateDeadline(Infinity, env) });
   const documents = await cacheMessageDocuments(raw, env, { deadline: updateDeadline(240000, env) });
-  feed = buildRawFeed(raw, env.DINGTALK_CONVERSATION_ID, media.images, documents.documents);
+  // 图片指纹只在图片已落盘后计算；取不到时返回空表，去重退回纯文本比对。
+  const fingerprints = imageFingerprints(media.localFiles, { directory: media.directory });
+  feed = buildRawFeed(raw, env.DINGTALK_CONVERSATION_ID, media.images, documents.documents, fingerprints);
   const stateFile = `${source}.published-content.json`;
   const targetHash = hash(JSON.stringify([env.DINGTALK_CONVERSATION_ID, host, user, remote]));
   const contentHash = hash(JSON.stringify({ documentPublicationHash: documents.publicationHash, messages: feed.messages.map(({ id, time, sender, text, images, documents, versions }) => ({ id, time, sender, text, images, documents, versionImages: [...new Set((versions || []).flatMap(version => (version.images || []).map(image => image.url)))].sort(), versionDocuments: (versions || []).flatMap(version => version.documents || []) })) }));
