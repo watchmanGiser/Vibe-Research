@@ -238,7 +238,7 @@ fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind
 `, { mode: 0o700 });
     const messages = [
       { messageId: 'year-end-local', time: '2025-12-31 23:30:00', sender: '测试', duplicateCount: 0,
-        text: '今年需求改善，明年继续观察；下周跟踪变化，不把计划视为已经完成。'.repeat(400) },
+        text: '原文资料日期：2024年8月1日。\nReport date: August 1, 2024.\n报告日期：2024 年 8 月\nPublished: August 2024.\n' + '今年需求改善，明年继续观察；下周跟踪变化，不把计划视为已经完成。'.repeat(400) },
       { messageId: 'year-end-iso', time: '2025-12-31T16:30:00.000Z', sender: '测试', duplicateCount: 0,
         text: '原文资料日期：2024年8月1日。今年需求与明年计划按原资料时点理解，明确日期优先，消息转发时间不覆盖原日期。'.repeat(3) },
     ];
@@ -255,6 +255,9 @@ fs.writeFileSync(process.argv[process.argv.indexOf('-o')+1],JSON.stringify({kind
     const oldYear = inputs.filter(s => s.includes('消息发布时间为2025-12-31 23:30:00（北京时间）'));
     assert.ok(oldYear.length >= 3, '分段及最终合并均携带同一个原消息时点');
     assert.ok(oldYear.some(s => s.includes('请合并事件事实、观点和必要说明')), '确实覆盖最终合并');
+    assert.ok(oldYear.every(s => s.includes('原文资料日期：2024年8月1日')), '后续分段及合并始终共享原资料日期，明确日期优先于消息时点');
+    assert.ok(oldYear.every(s => s.includes('Report date: August 1, 2024.')), '英文明确资料日期也跨段保留');
+    assert.ok(oldYear.every(s => s.includes('报告日期：2024 年 8 月') && s.includes('Published: August 2024.')), '中英年月日期与中文排版空格也跨段保留');
     const newYear = inputs.filter(s => s.includes('消息发布时间为2026-01-01 00:30:00（北京时间）'));
     assert.equal(newYear.length, 1, 'ISO时间应正确跨日转换为北京时间，不受机器时区影响');
     assert.ok(newYear[0].includes('原文资料日期：2024年8月1日'), '原文明确资料日期保留给模型优先采用');
